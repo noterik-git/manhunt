@@ -272,7 +272,7 @@ function drawBoundaryGroup(group, boundary, opts = {}) {
     pts.forEach((p) => bounds.extend(p));
     const poly = L.polygon(pts, {
       color: '#ff5252', weight: 2, opacity: 0.95,
-      fillColor: '#e03131', fillOpacity: opts.fillOpacity == null ? 0.08 : opts.fillOpacity,
+      fillColor: '#e03131', fillOpacity: opts.fillOpacity == null ? 0.14 : opts.fillOpacity,
     });
     if (area.name) {
       poly.bindTooltip(area.name, { permanent: true, direction: 'center', className: 'map-label map-label--area' });
@@ -325,7 +325,7 @@ function ensureCreateMap() {
 
 function refreshCreateBoundary(fit) {
   if (!state.createMap || !state.createBoundaryGroup) return;
-  const bounds = drawBoundaryGroup(state.createBoundaryGroup, state.boundary, { fillOpacity: 0.08 });
+  const bounds = drawBoundaryGroup(state.createBoundaryGroup, state.boundary, { fillOpacity: 0.16 });
   if (bounds && fit) state.createMap.fitBounds(bounds, { padding: [18, 18] });
   updateRadiusCircle();
 }
@@ -687,7 +687,7 @@ function ensureGameMap(party) {
   if (base) state.gameBaseMarker = L.marker([base.lat, base.lng]).addTo(map);
 
   if (boundary) {
-    const bounds = drawBoundaryGroup(state.gameBoundaryGroup, boundary, { fillOpacity: 0.05 });
+    const bounds = drawBoundaryGroup(state.gameBoundaryGroup, boundary, { fillOpacity: 0.14 });
     if (!state.gameFitted) {
       if (bounds) map.fitBounds(bounds, { padding: [40, 40] });
       else if (base) map.setView([base.lat, base.lng], 14);

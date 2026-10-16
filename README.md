@@ -88,13 +88,14 @@ Manhunt/
   filled polygons for each area, labelled **barrier streets/edges**, and
   **permitted route** lines (bridges/transit). These render on both the create
   map (as a preview) and the full-screen in-game map.
-- **Ádi Manhunt area.** The template highlights the whole of **Margitsziget**,
-  the **Újlipótváros** district (official limits: Duna – Dráva utca – Váci út –
-  Nyugati tér – Szent István körút) and **Margit híd**, with labelled barrier
-  streets and the Árpád híd permitted route. It is an approximation that follows
-  major streets, kept in `data/templates.json` so it can be refined.
-- **Mission locations and exact official boundary geometry are not invented** and
-  remain host-configurable.
+- **Ádi Manhunt area.** The template highlights a hard closed loop: the whole of
+  **Margitsziget** (island outline from OpenStreetMap) plus **Újlipótváros**,
+  plus **Margit híd** up to the island entrance. The loop is bounded by
+  **Szent István körút** (south), **Váci út** up to **Dózsa György út** (east),
+  **Dráva utca** (north) and the **Duna rakpart** (west); the area north of
+  Dráva utca (towards Árpád híd) and the Buda side are excluded. Barrier streets
+  are labelled. Kept in `data/templates.json` so it can be refined.
+- **Mission locations are not invented** and remain host-configurable.
 - **Live GPS tracking is not implemented yet.** The in-game map is for reference
   only.
 
