@@ -520,6 +520,24 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
   font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
   color: var(--red-bright); text-transform: uppercase;
 }
+.player__actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.kick-btn {
+  flex: none;
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  border: 1px solid rgba(224, 49, 49, 0.4);
+  background: rgba(224, 49, 49, 0.12);
+  color: var(--red-bright);
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 600;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: transform 0.12s var(--ease), background 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.kick-btn:active { transform: scale(0.92); background: rgba(224, 49, 49, 0.24); }
 .role-btn {
   border: 1px solid var(--border-strong);
   background: var(--surface-2);

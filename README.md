@@ -27,11 +27,14 @@ and are lost when the server restarts (acceptable for this first version).
   movement rules, catch method, boundary return period, and missions
 - Saved template **Ádi Manhunt** ("Ready to hunt.")
 - Account-free joining via code and display name; the code used sets the role
-- Live lobby: copy buttons for both codes, player list, host role assignment
-- Server-authoritative host actions (only the host can assign roles / start)
+- The host is a **seeker (hunter)** by default
+- Live lobby: copy buttons for both codes, player list, host role assignment,
+  and host-only **kick** while in the lobby
+- Server-authoritative host actions (only the host can assign roles, kick, start)
 - Reconnect support using a session-scoped player id
 - In-game full-screen map with pinch/zoom, a compact top-right timer, a role HUD,
-  boundary streets with labels, and permitted-route lines
+  boundary streets with labels, and permitted-route lines (no leave button once
+  the game starts)
 - Templates can define the play area as a street/river boundary (polygon) instead
   of a simple radius circle
 
@@ -52,14 +55,17 @@ environment variable.
 ## How to play
 
 1. The host taps **Create Game**, enters their own name, and optionally taps
-   **Choose Template** to start from **Ádi Manhunt**, then **Create Lobby**.
+   **Choose Template** to start from **Ádi Manhunt**, then **Create Lobby**. The
+   host joins as a seeker (hunter).
 2. The lobby shows two codes: the big **players** code (join as a runner) and the
    smaller **seekers** code (join as a hunter). Each has a copy button.
 3. Everyone else taps **Join Game**, enters one of the codes and a name. The code
    they use sets their starting role.
-4. The host can still tap a player's role button to cycle between Unassigned,
-   Hunter, and Runner. Runners are grouped into anonymous numbered pairs.
-5. The host taps **Start Game**. The state syncs to every phone.
+4. The host can tap a player's role button to cycle Unassigned / Hunter / Runner,
+   and tap **×** to kick a player (lobby only). Runners are grouped into
+   anonymous numbered pairs.
+5. The host taps **Start Game**. The state syncs to every phone and the
+   full-screen map takes over.
 
 ## Project structure
 
@@ -82,11 +88,11 @@ Manhunt/
   filled polygons for each area, labelled **barrier streets/edges**, and
   **permitted route** lines (bridges/transit). These render on both the create
   map (as a preview) and the full-screen in-game map.
-- **Ádi Manhunt area.** The template boundary approximates the official
-  Újlipótváros limits (Duna – Dráva utca – Váci út – Nyugati tér – Szent István
-  körút) plus Margitsziget, which is reachable only via the permitted bridges.
-  It is an approximation that follows major streets, kept in
-  `data/templates.json` so it can be refined.
+- **Ádi Manhunt area.** The template highlights the whole of **Margitsziget**,
+  the **Újlipótváros** district (official limits: Duna – Dráva utca – Váci út –
+  Nyugati tér – Szent István körút) and **Margit híd**, with labelled barrier
+  streets and the Árpád híd permitted route. It is an approximation that follows
+  major streets, kept in `data/templates.json` so it can be refined.
 - **Mission locations and exact official boundary geometry are not invented** and
   remain host-configurable.
 - **Live GPS tracking is not implemented yet.** The in-game map is for reference

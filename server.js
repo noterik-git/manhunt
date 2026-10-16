@@ -290,7 +290,7 @@ io.on('connection', (socket) => {
     party.players.set(playerId, {
       id: playerId,
       name: hostName,
-      role: 'unassigned',
+      role: 'hunter',
       pair: null,
       connected: true,
       socketId: socket.id,
@@ -415,6 +415,30 @@ io.on('connection', (socket) => {
     cb({ ok: true, state: sanitize(party) });
     io.to(party.id).emit('party:started', sanitize(party));
     broadcast(party);
+  });
+
+  socket.on('party:kick', (payload = {}, done) => {
+    const cb = ack(done);
+    const party = getPartyForSocket(socket);
+    if (!party) return cb({ ok: false, error: 'Not in a party.' });
+    if (!isHost(party, socket)) return cb({ ok: false, error: 'Only the host can kick players.' });
+    if (party.status !== 'lobby') return cb({ ok: false, error: 'Players can only be kicked in the lobby.' });
+
+    const targetId = String(payload.targetId || '');
+    if (targetId === party.hostId) return cb({ ok: false, error: 'You cannot kick yourself.' });
+    const target = party.players.get(targetId);
+    if (!target) return cb({ ok: false, error: 'Player not found.' });
+
+    if (target.socketId) {
+      const kickedSocket = io.sockets.sockets.get(target.socketId);
+      if (kickedSocket) {
+        kickedSocket.leave(party.id);
+        kickedSocket.data.partyId = null;
+        kickedSocket.emit('party:kicked', { code: party.code });
+      }
+    }
+    removePlayer(party, targetId);
+    cb({ ok: true });
   });
 
   socket.on('party:leave', (_payload, done) => {

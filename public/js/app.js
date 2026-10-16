@@ -144,6 +144,17 @@ socket.on('party:started', () => {
   toast('The game has started');
 });
 
+socket.on('party:kicked', () => {
+  state.party = null;
+  state.partyId = null;
+  state.gameFitted = false;
+  clearInterval(state.timerHandle);
+  setSession(null);
+  closeRules();
+  showView('dashboard');
+  toast('You were removed from the lobby');
+});
+
 /* ================================================================== */
 /* Templates                                                          */
 /* ================================================================== */
@@ -260,8 +271,8 @@ function drawBoundaryGroup(group, boundary, opts = {}) {
     if (pts.length < 3) return;
     pts.forEach((p) => bounds.extend(p));
     const poly = L.polygon(pts, {
-      color: '#e03131', weight: 1.5, opacity: 0.85, dashArray: '7 6',
-      fillColor: '#e03131', fillOpacity: opts.fillOpacity == null ? 0.06 : opts.fillOpacity,
+      color: '#ff5252', weight: 2, opacity: 0.95,
+      fillColor: '#e03131', fillOpacity: opts.fillOpacity == null ? 0.08 : opts.fillOpacity,
     });
     if (area.name) {
       poly.bindTooltip(area.name, { permanent: true, direction: 'center', className: 'map-label map-label--area' });
@@ -273,7 +284,7 @@ function drawBoundaryGroup(group, boundary, opts = {}) {
     const pts = (edge.path || []).map(toLL);
     if (pts.length < 2) return;
     pts.forEach((p) => bounds.extend(p));
-    const line = L.polyline(pts, { color: '#ff6b6b', weight: 3, opacity: 0.95 });
+    const line = L.polyline(pts, { color: '#ff6b6b', weight: 3.5, opacity: 0.95, lineCap: 'round' });
     if (edge.name) {
       line.bindTooltip(edge.name, { permanent: true, direction: 'center', className: 'map-label map-label--edge' });
     }
@@ -284,7 +295,7 @@ function drawBoundaryGroup(group, boundary, opts = {}) {
     const pts = (route.path || []).map(toLL);
     if (pts.length < 2) return;
     pts.forEach((p) => bounds.extend(p));
-    const line = L.polyline(pts, { color: '#35c46a', weight: 3, dashArray: '1 8', lineCap: 'round' });
+    const line = L.polyline(pts, { color: '#35c46a', weight: 5, opacity: 0.9, dashArray: '12 7', lineCap: 'round' });
     if (route.name) {
       line.bindTooltip(route.name, { permanent: true, direction: 'center', className: 'map-label map-label--route' });
     }
@@ -507,13 +518,28 @@ function renderLobby(party) {
       </span>`;
 
     if (host) {
+      const actions = document.createElement('span');
+      actions.className = 'player__actions';
+
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'role-btn';
       btn.dataset.role = p.role;
       btn.textContent = roleLabel(p.role);
       btn.addEventListener('click', () => cycleRole(p.id, p.role));
-      li.appendChild(btn);
+      actions.appendChild(btn);
+
+      if (p.id !== party.hostId) {
+        const kick = document.createElement('button');
+        kick.type = 'button';
+        kick.className = 'kick-btn';
+        kick.textContent = '\u00d7';
+        kick.setAttribute('aria-label', 'Kick ' + p.name);
+        kick.title = 'Kick';
+        kick.addEventListener('click', () => kickPlayer(p.id, p.name));
+        actions.appendChild(kick);
+      }
+      li.appendChild(actions);
     }
     list.appendChild(li);
   });
@@ -537,6 +563,13 @@ function cycleRole(playerId, current) {
   const next = order[(order.indexOf(current) + 1) % order.length];
   socket.emit('party:assign', { targetId: playerId, role: next }, (res) => {
     if (res && !res.ok) toast(res.error || 'Could not assign role.');
+  });
+}
+
+function kickPlayer(playerId, name) {
+  socket.emit('party:kick', { targetId: playerId }, (res) => {
+    if (res && !res.ok) toast(res.error || 'Could not kick player.');
+    else toast((name || 'Player') + ' removed');
   });
 }
 
@@ -762,7 +795,6 @@ function wire() {
     });
   });
   $('leaveBtn').addEventListener('click', leaveParty);
-  $('gameLeave').addEventListener('click', leaveParty);
 }
 
 /* ================================================================== */
