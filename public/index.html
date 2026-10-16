@@ -240,39 +240,28 @@
     </section>
 
     <!-- ============================= GAME ============================= -->
-    <section id="view-game" class="view">
-      <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true"></span>
-          <span class="brand-title">MANHUNT</span>
-        </div>
-        <span class="pill pill--live">Live</span>
-      </header>
-      <main class="screen">
-        <div id="role-card" class="role-card">
-          <span class="role-label">Your role</span>
-          <span id="roleName" class="role-name">Runner</span>
-          <span id="roleDetail" class="role-detail"></span>
-        </div>
+    <section id="view-game" class="view view--map">
+      <div id="game-map" class="map map--full"></div>
 
-        <div class="timer-card">
-          <span id="phaseLabel" class="phase-label">Escape phase</span>
-          <span id="timer" class="timer">--:--</span>
-          <span id="phaseSub" class="muted small"></span>
+      <div class="hud hud--tl">
+        <div class="hud-role">
+          <span class="hud-role__label">Your role</span>
+          <span id="roleName" class="hud-role__value">Runner</span>
+          <span id="roleDetail" class="hud-role__detail"></span>
         </div>
+      </div>
 
-        <div class="map-wrap">
-          <div id="game-map" class="map"></div>
-          <p class="map-hint">Live GPS tracking is not enabled yet.</p>
+      <div class="hud hud--tr">
+        <div class="hud-timer">
+          <span id="phaseLabel" class="hud-timer__phase">Escape</span>
+          <span id="timer" class="hud-timer__clock">--:--</span>
         </div>
+      </div>
 
-        <section class="section">
-          <h3 class="section-title">Rules</h3>
-          <div id="game-settings" class="settings-summary"></div>
-        </section>
-
-        <button id="gameLeave" class="btn btn--ghost" type="button">Leave Game</button>
-      </main>
+      <div class="hud hud--bl">
+        <button id="rulesBtn" class="hud-btn" type="button">Rules</button>
+        <button id="gameLeave" class="hud-btn hud-btn--danger" type="button">Leave</button>
+      </div>
     </section>
 
   </div>
@@ -286,6 +275,19 @@
         <button class="icon-btn" data-close-modal type="button" aria-label="Close">&#10005;</button>
       </div>
       <div id="template-list" class="template-list"></div>
+    </div>
+  </div>
+
+  <!-- ========================== RULES SHEET =========================== -->
+  <div id="rules-modal" class="modal" hidden>
+    <div class="modal__backdrop" data-close-rules></div>
+    <div class="modal__sheet" role="dialog" aria-label="Rules">
+      <div class="modal__head">
+        <span class="section-title">Rules</span>
+        <button class="icon-btn" data-close-rules type="button" aria-label="Close">&#10005;</button>
+      </div>
+      <p id="phaseSub" class="muted small"></p>
+      <div id="game-settings" class="settings-summary"></div>
     </div>
   </div>
 

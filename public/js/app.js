@@ -10,13 +10,18 @@ const state = {
   party: null,
   partyId: null,
   templates: [],
+  templateId: null,
+  boundary: null,        // template boundary (raw or normalized)
   base: null,            // { lat, lng }
   createMap: null,
   baseMarker: null,
   areaCircle: null,
+  createBoundaryGroup: null,
   gameMap: null,
   gameBaseMarker: null,
   gameAreaCircle: null,
+  gameBoundaryGroup: null,
+  gameFitted: false,
   timerHandle: null,
 };
 
@@ -26,6 +31,8 @@ const MOVEMENT_LABELS = {
   bike: 'Bike',
   esScooter: 'E-scooter',
 };
+
+const DEFAULT_CENTER = [47.4979, 19.0402]; // Budapest city centre (host adjusts)
 
 /* ================================================================== */
 /* Small helpers                                                      */
@@ -101,9 +108,8 @@ function showView(name) {
   if (el) el.classList.add('view--active');
   window.scrollTo(0, 0);
 
-  if (name === 'create') {
-    ensureCreateMap();
-  }
+  if (name === 'create') ensureCreateMap();
+  if (name === 'game' && state.gameMap) setTimeout(() => state.gameMap.invalidateSize(), 160);
 }
 
 /* ================================================================== */
@@ -152,21 +158,28 @@ async function loadTemplates() {
   renderTemplates();
 }
 
-function openTemplateModal() {
-  $('template-modal').hidden = false;
-}
-
-function closeTemplateModal() {
-  $('template-modal').hidden = true;
-}
+function openTemplateModal() { $('template-modal').hidden = false; }
+function closeTemplateModal() { $('template-modal').hidden = true; }
+function openRules() { $('rules-modal').hidden = false; }
+function closeRules() { $('rules-modal').hidden = true; }
 
 function renderTemplates() {
   const list = $('template-list');
   list.innerHTML = '';
-  if (!state.templates.length) {
-    list.innerHTML = '<p class="muted small">No templates available.</p>';
-    return;
-  }
+
+  const custom = document.createElement('button');
+  custom.type = 'button';
+  custom.className = 'template-card';
+  custom.innerHTML = `
+    <span class="template-card__badge">&#8734;</span>
+    <span class="template-card__body">
+      <p class="template-card__name">Custom</p>
+      <p class="template-card__desc">Just a radius circle around your base.</p>
+    </span>
+    <span class="template-card__arrow">&#8250;</span>`;
+  custom.addEventListener('click', useCustomArea);
+  list.appendChild(custom);
+
   state.templates.forEach((tpl) => {
     const card = document.createElement('button');
     card.type = 'button';
@@ -192,6 +205,7 @@ function applyTemplate(id) {
   if (!tpl) return;
   const s = tpl.settings;
   state.templateId = id;
+  state.boundary = (s.area && s.area.boundary) || null;
   $('gameName').value = tpl.name;
   $('templateChosen').textContent = tpl.name;
   $('durationMin').value = s.durationMin;
@@ -215,14 +229,74 @@ function applyTemplate(id) {
   setCheck('ms-return', s.missions.returnMissionEnabled);
 
   if (s.base) setBase(s.base.lat, s.base.lng, ''); else clearBase();
-  updateRadiusCircle();
+  refreshCreateBoundary(true);
+}
+
+function useCustomArea() {
+  state.boundary = null;
+  state.templateId = null;
+  $('templateChosen').textContent = 'Custom';
+  refreshCreateBoundary(false);
+  closeTemplateModal();
+}
+
+/* ================================================================== */
+/* Map helpers                                                        */
+/* ================================================================== */
+
+function toLL(v) {
+  if (Array.isArray(v)) return [Number(v[0]), Number(v[1])];
+  return [Number(v.lat), Number(v.lng)];
+}
+
+/** Draws boundary polygons, labelled barrier streets and permitted routes. */
+function drawBoundaryGroup(group, boundary, opts = {}) {
+  group.clearLayers();
+  if (!boundary) return null;
+  const bounds = L.latLngBounds([]);
+
+  (boundary.areas || []).forEach((area) => {
+    const pts = (area.vertices || []).map(toLL);
+    if (pts.length < 3) return;
+    pts.forEach((p) => bounds.extend(p));
+    const poly = L.polygon(pts, {
+      color: '#e03131', weight: 1.5, opacity: 0.85, dashArray: '7 6',
+      fillColor: '#e03131', fillOpacity: opts.fillOpacity == null ? 0.06 : opts.fillOpacity,
+    });
+    if (area.name) {
+      poly.bindTooltip(area.name, { permanent: true, direction: 'center', className: 'map-label map-label--area' });
+    }
+    group.addLayer(poly);
+  });
+
+  (boundary.edges || []).forEach((edge) => {
+    const pts = (edge.path || []).map(toLL);
+    if (pts.length < 2) return;
+    pts.forEach((p) => bounds.extend(p));
+    const line = L.polyline(pts, { color: '#ff6b6b', weight: 3, opacity: 0.95 });
+    if (edge.name) {
+      line.bindTooltip(edge.name, { permanent: true, direction: 'center', className: 'map-label map-label--edge' });
+    }
+    group.addLayer(line);
+  });
+
+  (boundary.permittedRoutes || []).forEach((route) => {
+    const pts = (route.path || []).map(toLL);
+    if (pts.length < 2) return;
+    pts.forEach((p) => bounds.extend(p));
+    const line = L.polyline(pts, { color: '#35c46a', weight: 3, dashArray: '1 8', lineCap: 'round' });
+    if (route.name) {
+      line.bindTooltip(route.name, { permanent: true, direction: 'center', className: 'map-label map-label--route' });
+    }
+    group.addLayer(line);
+  });
+
+  return bounds.isValid() ? bounds : null;
 }
 
 /* ================================================================== */
 /* Create map                                                         */
 /* ================================================================== */
-
-const DEFAULT_CENTER = [47.4979, 19.0402]; // Budapest city centre (host adjusts)
 
 function ensureCreateMap() {
   if (state.createMap || !window.L) return;
@@ -234,7 +308,15 @@ function ensureCreateMap() {
   }).addTo(map);
   map.on('click', (e) => setBase(e.latlng.lat, e.latlng.lng));
   state.createMap = map;
-  setTimeout(() => map.invalidateSize(), 150);
+  state.createBoundaryGroup = L.layerGroup().addTo(map);
+  setTimeout(() => { map.invalidateSize(); refreshCreateBoundary(!!state.boundary); }, 150);
+}
+
+function refreshCreateBoundary(fit) {
+  if (!state.createMap || !state.createBoundaryGroup) return;
+  const bounds = drawBoundaryGroup(state.createBoundaryGroup, state.boundary, { fillOpacity: 0.08 });
+  if (bounds && fit) state.createMap.fitBounds(bounds, { padding: [18, 18] });
+  updateRadiusCircle();
 }
 
 function setBase(lat, lng, source) {
@@ -262,8 +344,10 @@ function clearBase() {
 }
 
 function updateRadiusCircle() {
-  if (!state.createMap || !state.base) {
-    if (state.areaCircle && state.createMap) {
+  if (!state.createMap) return;
+  const show = state.base && !state.boundary;
+  if (!show) {
+    if (state.areaCircle) {
       state.createMap.removeLayer(state.areaCircle);
       state.areaCircle = null;
     }
@@ -291,9 +375,10 @@ function collectSettings() {
     hunterCount: Number($('hunterCount').value) || 3,
     escapeMin: Number($('escapeMin').value) || 0,
     area: {
-      name: 'Custom area',
+      name: state.boundary ? 'Template area' : 'Custom area',
       radiusM: Number($('areaRadius').value) || 2000,
       center: state.base ? { lat: state.base.lat, lng: state.base.lng } : null,
+      boundary: state.boundary,
     },
     base: state.base,
     runnerPairs: true,
@@ -466,8 +551,8 @@ function renderSettings(container, s) {
     ['Catch method', s.catchMethod === 'touch' ? 'Physical touch' : 'Tag'],
     ['Boundary return', s.boundary.warningEnabled ? s.boundary.returnMin + ' min warning' : 'Off'],
     ['Missions', s.missions.enabled ? 'On' : 'Off'],
-    ['Base location', s.base ? s.base.lat.toFixed(4) + ', ' + s.base.lng.toFixed(4) : 'Not set'],
     ['Area', s.area.name || '—'],
+    ['Base location', s.base ? s.base.lat.toFixed(4) + ', ' + s.base.lng.toFixed(4) : 'Not set'],
   ];
   container.innerHTML = rows.map(([k, v]) => `
     <div class="settings-row">
@@ -477,7 +562,7 @@ function renderSettings(container, s) {
 }
 
 /* ================================================================== */
-/* Game rendering                                                     */
+/* Game rendering (full-screen map)                                   */
 /* ================================================================== */
 
 function myPlayer(party) {
@@ -487,20 +572,16 @@ function myPlayer(party) {
 function renderGame(party) {
   const me = myPlayer(party);
   const role = me ? me.role : 'unassigned';
-  const card = $('role-card');
-  card.dataset.role = role;
 
-  let name = roleLabel(role).toUpperCase();
+  $('roleName').textContent = roleLabel(role).toUpperCase();
   let detail = '';
   if (role === 'hunter') {
-    detail = 'Catch runner pairs by ' + (party.settings.catchMethod === 'touch' ? 'physical touch.' : 'tagging them.');
+    detail = party.settings.catchMethod === 'touch' ? 'Catch pairs by touch.' : 'Catch pairs by tagging.';
   } else if (role === 'runner') {
-    name = 'RUNNER';
-    detail = me && me.pair ? 'You escape as part of runner pair ' + me.pair + '.' : 'Escape and survive.';
+    detail = me && me.pair ? 'Runner pair ' + me.pair : 'Escape and survive.';
   } else {
-    detail = 'The host has not assigned you a role yet.';
+    detail = 'No role assigned yet.';
   }
-  $('roleName').textContent = name;
   $('roleDetail').textContent = detail;
 
   renderSettings($('game-settings'), party.settings);
@@ -518,22 +599,23 @@ function startGameTimer(party) {
     const now = Date.now();
     const escapeEnds = startedAt + escapeMs;
 
-    let phase, target;
+    let phase, target, sub;
     if (now < escapeEnds) {
-      phase = 'Escape phase';
+      phase = 'Escape';
       target = escapeEnds;
-      $('phaseSub').textContent = 'Head start for the runners.';
+      sub = 'Head start for the runners.';
     } else if (now < endMs) {
-      phase = 'Hunt phase';
+      phase = 'Hunt';
       target = endMs;
-      $('phaseSub').textContent = 'The hunt is on.';
+      sub = 'The hunt is on.';
     } else {
       phase = 'Time is up';
       target = now;
-      $('phaseSub').textContent = 'The game has ended.';
+      sub = 'The game has ended.';
     }
     $('phaseLabel').textContent = phase;
     $('timer').textContent = formatClock(Math.max(0, target - now));
+    $('phaseSub').textContent = sub;
   };
   tick();
   state.timerHandle = setInterval(tick, 1000);
@@ -552,24 +634,41 @@ function formatClock(ms) {
 function ensureGameMap(party) {
   if (!window.L) return;
   const base = party.settings.base;
+  const boundary = party.settings.area && party.settings.area.boundary;
+
   if (!state.gameMap) {
     const center = base ? [base.lat, base.lng] : DEFAULT_CENTER;
-    const map = L.map('game-map', { zoomControl: false }).setView(center, base ? 14 : 12);
+    const map = L.map('game-map', { zoomControl: false }).setView(center, 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap',
     }).addTo(map);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    state.gameBoundaryGroup = L.layerGroup().addTo(map);
     state.gameMap = map;
   }
   const map = state.gameMap;
+
   if (state.gameBaseMarker) { map.removeLayer(state.gameBaseMarker); state.gameBaseMarker = null; }
   if (state.gameAreaCircle) { map.removeLayer(state.gameAreaCircle); state.gameAreaCircle = null; }
-  if (base) {
-    state.gameBaseMarker = L.marker([base.lat, base.lng]).addTo(map);
-    state.gameAreaCircle = L.circle([base.lat, base.lng], {
-      radius: party.settings.area.radiusM, color: '#e03131', weight: 1.5,
-      fillColor: '#e03131', fillOpacity: 0.08,
-    }).addTo(map);
-    map.setView([base.lat, base.lng], 14);
+
+  if (base) state.gameBaseMarker = L.marker([base.lat, base.lng]).addTo(map);
+
+  if (boundary) {
+    const bounds = drawBoundaryGroup(state.gameBoundaryGroup, boundary, { fillOpacity: 0.05 });
+    if (!state.gameFitted) {
+      if (bounds) map.fitBounds(bounds, { padding: [40, 40] });
+      else if (base) map.setView([base.lat, base.lng], 14);
+      state.gameFitted = true;
+    }
+  } else {
+    state.gameBoundaryGroup.clearLayers();
+    if (base) {
+      state.gameAreaCircle = L.circle([base.lat, base.lng], {
+        radius: party.settings.area.radiusM, color: '#e03131', weight: 1.5,
+        fillColor: '#e03131', fillOpacity: 0.08,
+      }).addTo(map);
+      if (!state.gameFitted) { map.setView([base.lat, base.lng], 14); state.gameFitted = true; }
+    }
   }
   setTimeout(() => map.invalidateSize(), 160);
 }
@@ -578,18 +677,18 @@ function ensureGameMap(party) {
 /* Copy code                                                          */
 /* ================================================================== */
 
-async function copyText(text) {
-  if (!text) return;
+async function copyText(t) {
+  if (!t) return;
   try {
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(t);
     toast('Code copied');
   } catch (_) {
     const input = document.createElement('input');
-    input.value = text;
+    input.value = t;
     document.body.appendChild(input);
     input.select();
     try { document.execCommand('copy'); toast('Code copied'); }
-    catch (__) { toast(text); }
+    catch (__) { toast(t); }
     input.remove();
   }
 }
@@ -602,6 +701,7 @@ function leaveParty() {
   socket.emit('party:leave', {}, () => {
     state.party = null;
     state.partyId = null;
+    state.gameFitted = false;
     clearInterval(state.timerHandle);
     setSession(null);
     showView('dashboard');
@@ -622,6 +722,9 @@ function wire() {
   document.querySelectorAll('[data-close-modal]').forEach((el) => {
     el.addEventListener('click', closeTemplateModal);
   });
+  document.querySelectorAll('[data-close-rules]').forEach((el) => {
+    el.addEventListener('click', closeRules);
+  });
   document.querySelectorAll('[data-copy]').forEach((el) => {
     el.addEventListener('click', () => {
       if (!state.party) return;
@@ -630,6 +733,7 @@ function wire() {
   });
 
   $('chooseTemplate').addEventListener('click', openTemplateModal);
+  $('rulesBtn').addEventListener('click', openRules);
   $('create-form').addEventListener('submit', submitCreate);
   $('join-form').addEventListener('submit', submitJoin);
 

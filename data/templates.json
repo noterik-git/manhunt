@@ -9,9 +9,50 @@
       "hunterCount": 3,
       "escapeMin": 15,
       "area": {
-        "name": "Újlipótváros, Margaret Island & permitted bridge routes",
+        "name": "Újlipótváros & Margitsziget",
         "radiusM": 2500,
-        "center": null
+        "center": null,
+        "boundary": {
+          "note": "Approximate boundary following the official Újlipótváros limits (Duna – Dráva utca – Váci út – Nyugati tér – Szent István körút) plus Margitsziget, reached only via the permitted bridges. Editable in data/templates.json.",
+          "areas": [
+            {
+              "name": "Újlipótváros",
+              "vertices": [
+                [47.5139, 19.0469],
+                [47.5171, 19.0503],
+                [47.5230, 19.0535],
+                [47.5325, 19.0563],
+                [47.5315, 19.0652],
+                [47.5235, 19.0642],
+                [47.5175, 19.0610],
+                [47.5108, 19.0578]
+              ]
+            },
+            {
+              "name": "Margitsziget",
+              "vertices": [
+                [47.5145, 19.0452],
+                [47.5200, 19.0472],
+                [47.5270, 19.0492],
+                [47.5340, 19.0510],
+                [47.5394, 19.0520],
+                [47.5340, 19.0498],
+                [47.5270, 19.0470],
+                [47.5200, 19.0448]
+              ]
+            }
+          ],
+          "edges": [
+            { "name": "Szent István körút", "path": [[47.5139, 19.0469], [47.5108, 19.0578]] },
+            { "name": "Váci út", "path": [[47.5108, 19.0578], [47.5175, 19.0610], [47.5235, 19.0642], [47.5315, 19.0652]] },
+            { "name": "Dráva utca", "path": [[47.5315, 19.0652], [47.5325, 19.0563]] },
+            { "name": "Duna (rakpart)", "path": [[47.5139, 19.0469], [47.5171, 19.0503], [47.5230, 19.0535], [47.5325, 19.0563]] }
+          ],
+          "permittedRoutes": [
+            { "name": "Margit híd", "path": [[47.5139, 19.0469], [47.5145, 19.0452]] },
+            { "name": "Árpád híd", "path": [[47.5385, 19.0655], [47.5394, 19.0520]] }
+          ]
+        }
       },
       "base": null,
       "runnerPairs": true,

@@ -17,8 +17,8 @@ and are lost when the server restarts (acceptable for this first version).
 
 ## Features
 
-- Animated loading screen with the **Made by Headband Co.** credit
-- Dashboard with **Create Game** / **Join Game** and a bottom **Made by Headband Co.** footer
+- Loading screen that transitions smoothly into the dashboard
+- Dashboard with **Create Game** / **Join Game**
 - Create flow with host name, game name, and a **Choose Template** button
   (templates are picked here, including **Ádi Manhunt**)
 - Two auto-generated 4-digit codes per lobby: big players code (runner) and
@@ -30,7 +30,10 @@ and are lost when the server restarts (acceptable for this first version).
 - Live lobby: copy buttons for both codes, player list, host role assignment
 - Server-authoritative host actions (only the host can assign roles / start)
 - Reconnect support using a session-scoped player id
-- In-game view with role card, phase countdown, and a base/area map
+- In-game full-screen map with pinch/zoom, a compact top-right timer, a role HUD,
+  boundary streets with labels, and permitted-route lines
+- Templates can define the play area as a street/river boundary (polygon) instead
+  of a simple radius circle
 
 ## Getting started
 
@@ -74,12 +77,20 @@ Manhunt/
 
 ## Configuration notes
 
-- **Coordinates, mission locations, and exact boundary geometry are not
-  invented.** The base location and area radius are set by the host on the map
-  during game creation, and template coordinates are intentionally `null` until
-  configured.
+- **Gameplay boundaries.** A custom game draws a simple radius circle around the
+  base the host sets on the map. A template can instead define a real boundary:
+  filled polygons for each area, labelled **barrier streets/edges**, and
+  **permitted route** lines (bridges/transit). These render on both the create
+  map (as a preview) and the full-screen in-game map.
+- **Ádi Manhunt area.** The template boundary approximates the official
+  Újlipótváros limits (Duna – Dráva utca – Váci út – Nyugati tér – Szent István
+  körút) plus Margitsziget, which is reachable only via the permitted bridges.
+  It is an approximation that follows major streets, kept in
+  `data/templates.json` so it can be refined.
+- **Mission locations and exact official boundary geometry are not invented** and
+  remain host-configurable.
 - **Live GPS tracking is not implemented yet.** The in-game map is for reference
-  only and the UI states this clearly.
+  only.
 
 ## Not included (by design)
 

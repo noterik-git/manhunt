@@ -91,6 +91,47 @@ function latLng(value) {
   return { lat, lng };
 }
 
+/** Accepts both {lat,lng} and [lat,lng] shapes. */
+function toLatLng(value) {
+  if (Array.isArray(value) && value.length >= 2) {
+    return latLng({ lat: value[0], lng: value[1] });
+  }
+  return latLng(value);
+}
+
+function text(value, max) {
+  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, max);
+}
+
+function toPoints(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(toLatLng).filter(Boolean);
+}
+
+function normalizeBoundary(input) {
+  if (!input || typeof input !== 'object') return null;
+  const areas = Array.isArray(input.areas)
+    ? input.areas.map((a) => ({
+      name: text(a && a.name, 60),
+      vertices: toPoints(a && a.vertices),
+    })).filter((a) => a.vertices.length >= 3)
+    : [];
+  const edges = Array.isArray(input.edges)
+    ? input.edges.map((e) => ({
+      name: text(e && e.name, 60),
+      path: toPoints(e && e.path),
+    })).filter((e) => e.path.length >= 2)
+    : [];
+  const permittedRoutes = Array.isArray(input.permittedRoutes)
+    ? input.permittedRoutes.map((r) => ({
+      name: text(r && r.name, 60),
+      path: toPoints(r && r.path),
+    })).filter((r) => r.path.length >= 2)
+    : [];
+  if (!areas.length && !edges.length && !permittedRoutes.length) return null;
+  return { note: text(input.note, 240), areas, edges, permittedRoutes };
+}
+
 const ALLOWED_HUNTER_MOVES = ['walk', 'publicTransport', 'bike', 'esScooter'];
 const ALLOWED_RUNNER_MOVES = ['walk', 'publicTransport'];
 
@@ -115,6 +156,7 @@ function normalizeSettings(input = {}) {
       name: String(area.name || '').slice(0, 80),
       radiusM: num(area.radiusM, 2000, 200, 20000),
       center: latLng(area.center),
+      boundary: normalizeBoundary(area.boundary),
     },
     base: latLng(s.base),
     runnerPairs: s.runnerPairs !== false,
@@ -218,6 +260,20 @@ io.on('connection', (socket) => {
     if (!playerId) return cb({ ok: false, error: 'Missing player id.' });
 
     const { playerCode, seekerCode } = makePartyCodes();
+
+    // A template can supply a boundary (street/river geometry) when the host
+    // did not provide one of their own.
+    const settingsInput = JSON.parse(JSON.stringify(payload.settings || {}));
+    if (payload.templateId) {
+      const tpl = templates.find((t) => t.id === payload.templateId);
+      const tplArea = tpl && tpl.settings && tpl.settings.area;
+      if (tplArea) {
+        settingsInput.area = settingsInput.area || {};
+        if (!settingsInput.area.boundary) settingsInput.area.boundary = tplArea.boundary;
+        if (!settingsInput.area.name) settingsInput.area.name = tplArea.name;
+      }
+    }
+
     const party = {
       id: crypto.randomUUID(),
       playerCode,
@@ -226,7 +282,7 @@ io.on('connection', (socket) => {
       hostId: playerId,
       templateId: payload.templateId || null,
       status: 'lobby',
-      settings: normalizeSettings(payload.settings),
+      settings: normalizeSettings(settingsInput),
       createdAt: Date.now(),
       startedAt: null,
       players: new Map(),
