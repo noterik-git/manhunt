@@ -1,0 +1,36 @@
+[
+  {
+    "id": "adi-manhunt",
+    "name": "\u00c1di Manhunt",
+    "tagline": "Ready to hunt.",
+    "description": "Újlipótváros, Margaret Island and the permitted bridge and transit routes.",
+    "settings": {
+      "durationMin": 120,
+      "hunterCount": 3,
+      "escapeMin": 15,
+      "area": {
+        "name": "Újlipótváros, Margaret Island & permitted bridge routes",
+        "radiusM": 2500,
+        "center": null
+      },
+      "base": null,
+      "runnerPairs": true,
+      "movement": {
+        "hunters": ["walk", "publicTransport", "bike", "esScooter"],
+        "runners": ["walk", "publicTransport"]
+      },
+      "catchMethod": "touch",
+      "boundary": {
+        "warningEnabled": true,
+        "returnMin": 10
+      },
+      "missions": {
+        "enabled": true,
+        "pointsEnabled": true,
+        "eliminationEnabled": true,
+        "returnMissionEnabled": true,
+        "notes": "Missions with points and elimination. One possible return mission."
+      }
+    }
+  }
+]

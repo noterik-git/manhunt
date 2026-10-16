@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0c0d0f" />
+  <meta name="description" content="Manhunt - a real-world multiplayer chase game for a group of friends." />
+  <title>Manhunt</title>
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ============================ LOADING ============================ -->
+    <section id="view-loading" class="view view--active view--center">
+      <div class="loader">
+        <div class="brand brand--xl">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <h1 class="brand-title">MANHUNT</h1>
+        </div>
+        <div class="loader-bar" aria-hidden="true"><span></span></div>
+        <p class="loader-credit">Made by Headband Co.</p>
+      </div>
+    </section>
+
+    <!-- =========================== DASHBOARD =========================== -->
+    <section id="view-dashboard" class="view">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-title">MANHUNT</span>
+        </div>
+      </header>
+      <main class="screen">
+        <div class="hero">
+          <h2>Real-world hunt.</h2>
+          <p class="muted">Hunters chase runner pairs across the city. No accounts. Just a code.</p>
+        </div>
+
+        <div class="stack">
+          <button class="btn btn--primary btn--lg" data-nav="create">Create Game</button>
+          <button class="btn btn--ghost btn--lg" data-nav="join">Join Game</button>
+        </div>
+
+        <section class="section">
+          <h3 class="section-title">Templates</h3>
+          <div id="template-list" class="template-list"></div>
+        </section>
+      </main>
+    </section>
+
+    <!-- ============================ CREATE ============================ -->
+    <section id="view-create" class="view">
+      <header class="topbar">
+        <button class="icon-btn" data-back="dashboard" aria-label="Back">&#8592;</button>
+        <span class="topbar-title">Create Game</span>
+        <span class="icon-spacer"></span>
+      </header>
+      <main class="screen">
+        <form id="create-form" class="form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Game name</span>
+            <input id="gameName" class="input" type="text" maxlength="32" placeholder="Friday Night Hunt" />
+          </label>
+
+          <label class="field">
+            <span class="field-label">Template</span>
+            <select id="templateSelect" class="input"></select>
+          </label>
+
+          <div class="grid-3">
+            <label class="field">
+              <span class="field-label">Duration</span>
+              <input id="durationMin" class="input" type="number" inputmode="numeric" min="10" max="720" step="5" value="120" />
+              <span class="field-hint">min</span>
+            </label>
+            <label class="field">
+              <span class="field-label">Hunters</span>
+              <input id="hunterCount" class="input" type="number" inputmode="numeric" min="1" max="20" value="3" />
+              <span class="field-hint">players</span>
+            </label>
+            <label class="field">
+              <span class="field-label">Escape time</span>
+              <input id="escapeMin" class="input" type="number" inputmode="numeric" min="0" max="180" step="5" value="15" />
+              <span class="field-hint">min</span>
+            </label>
+          </div>
+
+          <div class="field">
+            <div class="field-row">
+              <span class="field-label">Play area &amp; base</span>
+              <button type="button" id="locateBtn" class="link-btn">Use my location</button>
+            </div>
+            <div class="map-wrap">
+              <div id="create-map" class="map"></div>
+              <p class="map-hint">Tap the map to set the base location.</p>
+            </div>
+            <div class="field-row">
+              <span id="baseCoords" class="field-hint">No base set</span>
+              <button type="button" id="clearBase" class="link-btn">Clear</button>
+            </div>
+          </div>
+
+          <label class="field">
+            <span class="field-label">Area radius · <span id="radiusOut">2500</span> m</span>
+            <input id="areaRadius" class="range" type="range" min="300" max="8000" step="100" value="2500" />
+          </label>
+
+          <fieldset class="field">
+            <legend class="field-label">Hunter movement</legend>
+            <div class="chips">
+              <label class="chip"><input type="checkbox" id="hv-walk" checked /><span>Walk</span></label>
+              <label class="chip"><input type="checkbox" id="hv-publicTransport" checked /><span>Transit</span></label>
+              <label class="chip"><input type="checkbox" id="hv-bike" checked /><span>Bike</span></label>
+              <label class="chip"><input type="checkbox" id="hv-esScooter" checked /><span>E-scooter</span></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="field">
+            <legend class="field-label">Runner movement</legend>
+            <div class="chips">
+              <label class="chip"><input type="checkbox" id="rv-walk" checked /><span>Walk</span></label>
+              <label class="chip"><input type="checkbox" id="rv-publicTransport" checked /><span>Transit</span></label>
+            </div>
+          </fieldset>
+
+          <label class="field">
+            <span class="field-label">Catch method</span>
+            <select id="catchMethod" class="input">
+              <option value="touch">Physical touch</option>
+              <option value="tag">Tag</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="field-label">Boundary return period</span>
+            <input id="returnMin" class="input" type="number" inputmode="numeric" min="1" max="60" value="10" />
+            <span class="field-hint">minutes to return after a boundary warning</span>
+          </label>
+
+          <fieldset class="field">
+            <legend class="field-label">Missions</legend>
+            <div class="chips">
+              <label class="chip"><input type="checkbox" id="ms-enabled" checked /><span>Missions</span></label>
+              <label class="chip"><input type="checkbox" id="ms-points" checked /><span>Points</span></label>
+              <label class="chip"><input type="checkbox" id="ms-elimination" checked /><span>Elimination</span></label>
+              <label class="chip"><input type="checkbox" id="ms-return" checked /><span>Return mission</span></label>
+            </div>
+          </fieldset>
+
+          <p id="create-error" class="error" hidden></p>
+          <button type="submit" class="btn btn--primary btn--lg">Create Lobby</button>
+        </form>
+      </main>
+    </section>
+
+    <!-- ============================= JOIN ============================= -->
+    <section id="view-join" class="view">
+      <header class="topbar">
+        <button class="icon-btn" data-back="dashboard" aria-label="Back">&#8592;</button>
+        <span class="topbar-title">Join Game</span>
+        <span class="icon-spacer"></span>
+      </header>
+      <main class="screen">
+        <form id="join-form" class="form" autocomplete="off">
+          <label class="field">
+            <span class="field-label">Party code</span>
+            <input id="joinCode" class="input input--code" type="text" maxlength="6" placeholder="ABCD"
+              autocapitalize="characters" autocorrect="off" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span class="field-label">Display name</span>
+            <input id="joinName" class="input" type="text" maxlength="18" placeholder="Your name" />
+          </label>
+          <p id="join-error" class="error" hidden></p>
+          <button type="submit" class="btn btn--primary btn--lg">Join Lobby</button>
+        </form>
+        <p class="muted center small">No account needed. Ask the host for the code.</p>
+      </main>
+    </section>
+
+    <!-- ============================ LOBBY ============================= -->
+    <section id="view-lobby" class="view">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-title">MANHUNT</span>
+        </div>
+        <span id="lobbyStatus" class="pill pill--muted">Lobby</span>
+      </header>
+      <main class="screen">
+        <div class="code-card">
+          <span class="field-label">Party code</span>
+          <div class="code-row">
+            <span id="lobbyCode" class="code-value">----</span>
+            <button id="copyCode" class="btn btn--ghost btn--sm" type="button">Copy</button>
+          </div>
+          <p class="muted small" id="lobbyGameName">Manhunt</p>
+        </div>
+
+        <section class="section">
+          <div class="section-head">
+            <h3 class="section-title">Players <span id="playerCount" class="count">0</span></h3>
+            <span id="assignHint" class="field-hint">Tap a role to change it.</span>
+          </div>
+          <ul id="lobby-players" class="players"></ul>
+        </section>
+
+        <section class="section">
+          <h3 class="section-title">Settings</h3>
+          <div id="lobby-settings" class="settings-summary"></div>
+        </section>
+
+        <div class="lobby-actions">
+          <button id="startBtn" class="btn btn--primary btn--lg" type="button">Start Game</button>
+          <button id="leaveBtn" class="btn btn--ghost" type="button">Leave</button>
+          <p id="startHint" class="muted center small"></p>
+        </div>
+      </main>
+    </section>
+
+    <!-- ============================= GAME ============================= -->
+    <section id="view-game" class="view">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-title">MANHUNT</span>
+        </div>
+        <span class="pill pill--live">Live</span>
+      </header>
+      <main class="screen">
+        <div id="role-card" class="role-card">
+          <span class="role-label">Your role</span>
+          <span id="roleName" class="role-name">Runner</span>
+          <span id="roleDetail" class="role-detail"></span>
+        </div>
+
+        <div class="timer-card">
+          <span id="phaseLabel" class="phase-label">Escape phase</span>
+          <span id="timer" class="timer">--:--</span>
+          <span id="phaseSub" class="muted small"></span>
+        </div>
+
+        <div class="map-wrap">
+          <div id="game-map" class="map"></div>
+          <p class="map-hint">Live GPS tracking is not enabled yet.</p>
+        </div>
+
+        <section class="section">
+          <h3 class="section-title">Rules</h3>
+          <div id="game-settings" class="settings-summary"></div>
+        </section>
+
+        <button id="gameLeave" class="btn btn--ghost" type="button">Leave Game</button>
+      </main>
+    </section>
+
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

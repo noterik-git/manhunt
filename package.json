@@ -1,0 +1,17 @@
+{
+  "name": "manhunt",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Manhunt - a real-world multiplayer chase game for a group of friends.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}
