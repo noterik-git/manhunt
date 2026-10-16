@@ -8,7 +8,7 @@ const state = {
   view: 'loading',       // loading | dashboard | create | join | lobby | game
   playerId: null,
   party: null,
-  partyCode: null,
+  partyId: null,
   templates: [],
   base: null,            // { lat, lng }
   createMap: null,
@@ -55,9 +55,9 @@ function getSession() {
   } catch (_) { return null; }
 }
 
-function setSession(code) {
+function setSession(partyId) {
   try {
-    if (code) sessionStorage.setItem('manhunt.session', JSON.stringify({ code }));
+    if (partyId) sessionStorage.setItem('manhunt.session', JSON.stringify({ partyId }));
     else sessionStorage.removeItem('manhunt.session');
   } catch (_) {}
 }
@@ -115,11 +115,11 @@ const socket = io();
 socket.on('connect', () => {
   if (!state.playerId) state.playerId = getPlayerId();
   const session = getSession();
-  if (session && session.code) {
-    socket.emit('party:reconnect', { code: session.code, playerId: state.playerId }, (res) => {
+  if (session && session.partyId) {
+    socket.emit('party:reconnect', { partyId: session.partyId, playerId: state.playerId }, (res) => {
       if (res && res.ok) {
         state.party = res.state;
-        state.partyCode = res.code;
+        state.partyId = res.id;
         renderParty();
       } else {
         setSession(null);
@@ -130,7 +130,7 @@ socket.on('connect', () => {
 
 socket.on('party:update', (party) => {
   state.party = party;
-  state.partyCode = party.code;
+  state.partyId = party.id;
   renderParty();
 });
 
@@ -150,12 +150,23 @@ async function loadTemplates() {
     state.templates = [];
   }
   renderTemplates();
-  populateTemplateSelect();
+}
+
+function openTemplateModal() {
+  $('template-modal').hidden = false;
+}
+
+function closeTemplateModal() {
+  $('template-modal').hidden = true;
 }
 
 function renderTemplates() {
   const list = $('template-list');
   list.innerHTML = '';
+  if (!state.templates.length) {
+    list.innerHTML = '<p class="muted small">No templates available.</p>';
+    return;
+  }
   state.templates.forEach((tpl) => {
     const card = document.createElement('button');
     card.type = 'button';
@@ -169,25 +180,10 @@ function renderTemplates() {
       </span>
       <span class="template-card__arrow">&#8250;</span>`;
     card.addEventListener('click', () => {
-      populateTemplateSelect();
-      showView('create');
       applyTemplate(tpl.id);
+      closeTemplateModal();
     });
     list.appendChild(card);
-  });
-  if (!state.templates.length) {
-    list.innerHTML = '<p class="muted small">No templates available.</p>';
-  }
-}
-
-function populateTemplateSelect() {
-  const select = $('templateSelect');
-  select.innerHTML = '<option value="">Custom</option>';
-  state.templates.forEach((tpl) => {
-    const opt = document.createElement('option');
-    opt.value = tpl.id;
-    opt.textContent = tpl.name;
-    select.appendChild(opt);
   });
 }
 
@@ -195,7 +191,9 @@ function applyTemplate(id) {
   const tpl = state.templates.find((t) => t.id === id);
   if (!tpl) return;
   const s = tpl.settings;
+  state.templateId = id;
   $('gameName').value = tpl.name;
+  $('templateChosen').textContent = tpl.name;
   $('durationMin').value = s.durationMin;
   $('hunterCount').value = s.hunterCount;
   $('escapeMin').value = s.escapeMin;
@@ -203,7 +201,6 @@ function applyTemplate(id) {
   $('radiusOut').textContent = s.area.radiusM;
   $('returnMin').value = s.boundary.returnMin;
   $('catchMethod').value = s.catchMethod;
-  $('templateSelect').value = id;
 
   const setCheck = (elId, on) => { $(elId).checked = !!on; };
   setCheck('hv-walk', s.movement.hunters.includes('walk'));
@@ -322,12 +319,14 @@ function collectSettings() {
 function submitCreate(e) {
   e.preventDefault();
   showError('create-error', '');
+  const hostName = $('hostName').value.trim();
+  if (!hostName) return showError('create-error', 'Enter your name.');
   const gameName = $('gameName').value.trim() || 'Manhunt';
   const payload = {
     playerId: state.playerId,
-    playerName: 'Host',
+    playerName: hostName,
     gameName,
-    templateId: $('templateSelect').value || null,
+    templateId: state.templateId || null,
     settings: collectSettings(),
   };
   const btn = e.target.querySelector('button[type="submit"]');
@@ -336,8 +335,8 @@ function submitCreate(e) {
     btn.disabled = false;
     if (res && res.ok) {
       state.party = res.state;
-      state.partyCode = res.code;
-      setSession(res.code);
+      state.partyId = res.id;
+      setSession(res.id);
       renderParty();
     } else {
       showError('create-error', (res && res.error) || 'Could not create the game.');
@@ -352,9 +351,9 @@ function submitCreate(e) {
 function submitJoin(e) {
   e.preventDefault();
   showError('join-error', '');
-  const code = $('joinCode').value.trim().toUpperCase();
+  const code = $('joinCode').value.trim();
   const name = $('joinName').value.trim();
-  if (code.length < 3) return showError('join-error', 'Enter a valid party code.');
+  if (code.length !== 4) return showError('join-error', 'Enter the 4-digit code.');
   if (!name) return showError('join-error', 'Enter a display name.');
 
   const btn = e.target.querySelector('button[type="submit"]');
@@ -363,8 +362,8 @@ function submitJoin(e) {
     btn.disabled = false;
     if (res && res.ok) {
       state.party = res.state;
-      state.partyCode = res.code;
-      setSession(res.code);
+      state.partyId = res.id;
+      setSession(res.id);
       renderParty();
     } else {
       showError('join-error', (res && res.error) || 'Could not join the game.');
@@ -393,7 +392,8 @@ function renderParty() {
 }
 
 function renderLobby(party) {
-  $('lobbyCode').textContent = party.code;
+  $('playerCode').textContent = party.playerCode;
+  $('seekerCode').textContent = party.seekerCode;
   $('lobbyGameName').textContent = party.name;
   $('lobbyStatus').textContent = 'Lobby';
   $('lobbyStatus').className = 'pill pill--muted';
@@ -578,19 +578,18 @@ function ensureGameMap(party) {
 /* Copy code                                                          */
 /* ================================================================== */
 
-async function copyCode() {
-  const code = state.partyCode;
-  if (!code) return;
+async function copyText(text) {
+  if (!text) return;
   try {
-    await navigator.clipboard.writeText(code);
+    await navigator.clipboard.writeText(text);
     toast('Code copied');
   } catch (_) {
     const input = document.createElement('input');
-    input.value = code;
+    input.value = text;
     document.body.appendChild(input);
     input.select();
     try { document.execCommand('copy'); toast('Code copied'); }
-    catch (__) { toast(code); }
+    catch (__) { toast(text); }
     input.remove();
   }
 }
@@ -602,7 +601,7 @@ async function copyCode() {
 function leaveParty() {
   socket.emit('party:leave', {}, () => {
     state.party = null;
-    state.partyCode = null;
+    state.partyId = null;
     clearInterval(state.timerHandle);
     setSession(null);
     showView('dashboard');
@@ -620,12 +619,22 @@ function wire() {
   document.querySelectorAll('[data-back]').forEach((el) => {
     el.addEventListener('click', () => showView(el.dataset.back));
   });
+  document.querySelectorAll('[data-close-modal]').forEach((el) => {
+    el.addEventListener('click', closeTemplateModal);
+  });
+  document.querySelectorAll('[data-copy]').forEach((el) => {
+    el.addEventListener('click', () => {
+      if (!state.party) return;
+      copyText(el.dataset.copy === 'seeker' ? state.party.seekerCode : state.party.playerCode);
+    });
+  });
 
+  $('chooseTemplate').addEventListener('click', openTemplateModal);
   $('create-form').addEventListener('submit', submitCreate);
   $('join-form').addEventListener('submit', submitJoin);
 
   $('joinCode').addEventListener('input', (e) => {
-    e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    e.target.value = e.target.value.replace(/[^0-9]/g, '').slice(0, 4);
   });
 
   $('areaRadius').addEventListener('input', (e) => {
@@ -643,11 +652,6 @@ function wire() {
     );
   });
 
-  $('templateSelect').addEventListener('change', (e) => {
-    if (e.target.value) applyTemplate(e.target.value);
-  });
-
-  $('copyCode').addEventListener('click', copyCode);
   $('startBtn').addEventListener('click', () => {
     socket.emit('party:start', {}, (res) => {
       if (res && !res.ok) toast(res.error || 'Could not start the game.');

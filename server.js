@@ -2,6 +2,7 @@
 
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
 
@@ -18,7 +19,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 /**
  * Active parties live only in memory. They are lost when the server restarts,
- * which is acceptable for this first version.
+ * which is acceptable for this first version. Keyed by internal party id.
  * @type {Map<string, Party>}
  */
 const parties = new Map();
@@ -30,17 +31,34 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, parties: parties.size
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function codeInUse(code) {
+  for (const party of parties.values()) {
+    if (party.playerCode === code || party.seekerCode === code) return true;
+  }
+  return false;
+}
 
-function makeCode(len = 4) {
+/** 4-digit numeric code (1000-9999), unique across active parties. */
+function makeNumericCode() {
   let code;
   do {
-    code = '';
-    for (let i = 0; i < len; i += 1) {
-      code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
-    }
-  } while (parties.has(code));
+    code = String(Math.floor(1000 + Math.random() * 9000));
+  } while (codeInUse(code));
   return code;
+}
+
+function makePartyCodes() {
+  const playerCode = makeNumericCode();
+  let seekerCode = makeNumericCode();
+  while (seekerCode === playerCode) seekerCode = makeNumericCode();
+  return { playerCode, seekerCode };
+}
+
+function findByCode(code) {
+  for (const party of parties.values()) {
+    if (party.playerCode === code || party.seekerCode === code) return party;
+  }
+  return null;
 }
 
 function cleanName(value) {
@@ -146,11 +164,13 @@ function countRoles(party) {
 
 function sanitize(party) {
   return {
-    code: party.code,
+    id: party.id,
     name: party.name,
     hostId: party.hostId,
     status: party.status,
     templateId: party.templateId,
+    playerCode: party.playerCode,
+    seekerCode: party.seekerCode,
     settings: party.settings,
     counts: countRoles(party),
     createdAt: party.createdAt,
@@ -166,13 +186,13 @@ function sanitize(party) {
 }
 
 function broadcast(party) {
-  io.to(party.code).emit('party:update', sanitize(party));
+  io.to(party.id).emit('party:update', sanitize(party));
 }
 
 function getPartyForSocket(socket) {
-  const code = socket.data.code;
-  if (!code) return null;
-  return parties.get(code) || null;
+  const id = socket.data.partyId;
+  if (!id) return null;
+  return parties.get(id) || null;
 }
 
 function isHost(party, socket) {
@@ -189,7 +209,7 @@ function ack(cb) {
 
 io.on('connection', (socket) => {
   socket.data.playerId = null;
-  socket.data.code = null;
+  socket.data.partyId = null;
 
   socket.on('party:create', (payload = {}, done) => {
     const cb = ack(done);
@@ -197,9 +217,11 @@ io.on('connection', (socket) => {
     const hostName = cleanName(payload.playerName) || 'Host';
     if (!playerId) return cb({ ok: false, error: 'Missing player id.' });
 
-    const code = makeCode();
+    const { playerCode, seekerCode } = makePartyCodes();
     const party = {
-      code,
+      id: crypto.randomUUID(),
+      playerCode,
+      seekerCode,
       name: cleanGameName(payload.gameName),
       hostId: playerId,
       templateId: payload.templateId || null,
@@ -218,27 +240,31 @@ io.on('connection', (socket) => {
       socketId: socket.id,
       joinedAt: Date.now(),
     });
-    parties.set(code, party);
+    parties.set(party.id, party);
 
     socket.data.playerId = playerId;
-    socket.data.code = code;
-    socket.join(code);
+    socket.data.partyId = party.id;
+    socket.join(party.id);
 
-    cb({ ok: true, code, playerId, state: sanitize(party) });
+    cb({ ok: true, id: party.id, state: sanitize(party) });
     broadcast(party);
   });
 
   socket.on('party:join', (payload = {}, done) => {
     const cb = ack(done);
-    const code = String(payload.code || '').toUpperCase().trim();
+    const code = String(payload.code || '').trim();
     const playerId = String(payload.playerId || '').slice(0, 64);
     const name = cleanName(payload.name);
     if (!playerId) return cb({ ok: false, error: 'Missing player id.' });
 
-    const party = parties.get(code);
+    const party = findByCode(code);
     if (!party) return cb({ ok: false, error: 'Invalid party code.' });
     if (party.status !== 'lobby') return cb({ ok: false, error: 'This game has already started.' });
     if (!name) return cb({ ok: false, error: 'Enter a display name.' });
+
+    // The code used decides the starting role: players join as runners,
+    // seekers (hunters) use the smaller code.
+    const joinRole = code === party.seekerCode ? 'hunter' : 'runner';
 
     const existing = party.players.get(playerId);
     if (!existing && party.players.size >= 40) {
@@ -252,27 +278,28 @@ io.on('connection', (socket) => {
       party.players.set(playerId, {
         id: playerId,
         name,
-        role: 'unassigned',
+        role: joinRole,
         pair: null,
         connected: true,
         socketId: socket.id,
         joinedAt: Date.now(),
       });
     }
+    recomputePairs(party);
 
     socket.data.playerId = playerId;
-    socket.data.code = code;
-    socket.join(code);
+    socket.data.partyId = party.id;
+    socket.join(party.id);
 
-    cb({ ok: true, code, playerId, state: sanitize(party) });
+    cb({ ok: true, id: party.id, state: sanitize(party) });
     broadcast(party);
   });
 
   socket.on('party:reconnect', (payload = {}, done) => {
     const cb = ack(done);
-    const code = String(payload.code || '').toUpperCase().trim();
+    const id = String(payload.partyId || '');
     const playerId = String(payload.playerId || '').slice(0, 64);
-    const party = parties.get(code);
+    const party = parties.get(id);
     if (!party) return cb({ ok: false, error: 'Party no longer exists.' });
     const player = party.players.get(playerId);
     if (!player) return cb({ ok: false, error: 'You are not part of this party.' });
@@ -280,10 +307,10 @@ io.on('connection', (socket) => {
     player.connected = true;
     player.socketId = socket.id;
     socket.data.playerId = playerId;
-    socket.data.code = code;
-    socket.join(code);
+    socket.data.partyId = party.id;
+    socket.join(party.id);
 
-    cb({ ok: true, code, playerId, state: sanitize(party) });
+    cb({ ok: true, id: party.id, state: sanitize(party) });
     broadcast(party);
   });
 
@@ -330,17 +357,18 @@ io.on('connection', (socket) => {
     party.status = 'active';
     party.startedAt = Date.now();
     cb({ ok: true, state: sanitize(party) });
-    io.to(party.code).emit('party:started', sanitize(party));
+    io.to(party.id).emit('party:started', sanitize(party));
     broadcast(party);
   });
 
   socket.on('party:leave', (_payload, done) => {
     const cb = ack(done);
     const party = getPartyForSocket(socket);
-    if (!party) return cb({ ok: true });
-    removePlayer(party, socket.data.playerId);
-    socket.leave(party.code);
-    socket.data.code = null;
+    if (party) {
+      removePlayer(party, socket.data.playerId);
+      socket.leave(party.id);
+    }
+    socket.data.partyId = null;
     cb({ ok: true });
   });
 
@@ -364,7 +392,7 @@ function removePlayer(party, playerId) {
   if (!party.players.has(playerId)) return;
   party.players.delete(playerId);
   if (party.players.size === 0) {
-    parties.delete(party.code);
+    parties.delete(party.id);
     return;
   }
   if (party.hostId === playerId) {
@@ -375,10 +403,10 @@ function removePlayer(party, playerId) {
   broadcast(party);
 }
 
-// Periodically drop empty, disconnected parties.
+// Periodically drop empty parties.
 setInterval(() => {
-  for (const [code, party] of parties) {
-    if (party.players.size === 0) parties.delete(code);
+  for (const [id, party] of parties) {
+    if (party.players.size === 0) parties.delete(id);
   }
 }, 60 * 1000).unref?.();
 
