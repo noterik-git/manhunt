@@ -23,6 +23,28 @@ const state = {
   gameBoundaryGroup: null,
   gameFitted: false,
   timerHandle: null,
+  // chat / game log
+  chat: [],
+  chatOpen: false,
+  chatUnread: 0,
+  // live location + heading
+  watchId: null,
+  userLatLng: null,
+  compassHeading: null,
+  gpsHeading: null,
+  userMarker: null,
+  userCone: null,
+  followUser: false,
+  userCentered: false,
+  orientationBound: false,
+  hasAbsoluteHeading: false,
+  // shared player positions (hunters see runners)
+  runnerPositions: {},
+  runnerMarkers: {},
+  positionTimer: null,
+  catchTargetId: null,
+  selfCaught: false,
+  lastArrowUpdate: 0,
 };
 
 const MOVEMENT_LABELS = {
@@ -33,6 +55,14 @@ const MOVEMENT_LABELS = {
 };
 
 const DEFAULT_CENTER = [47.4979, 19.0402]; // Budapest city centre (host adjusts)
+
+// View cone drawn around the player's live location.
+const USER_CONE_RADIUS_M = 70;
+const USER_CONE_SPREAD_DEG = 55;
+const USER_LOCATION_COLOR = '#3d9bff';
+
+// How close a hunter must be (using last reported positions) to catch.
+const CATCH_RADIUS_M = 15;
 
 /* ================================================================== */
 /* Small helpers                                                      */
@@ -144,11 +174,39 @@ socket.on('party:started', () => {
   toast('The game has started');
 });
 
+socket.on('chat:message', (msg) => {
+  if (!msg || !msg.id) return;
+  state.chat = mergeChat(state.chat, [msg]);
+  renderChatLog();
+  if (!state.chatOpen) {
+    state.chatUnread += 1;
+    renderChatBadge();
+    if (msg.kind === 'log') toast(msg.text);
+  }
+});
+
+// Runner positions, relayed to hunters only.
+socket.on('player:positions', (payload) => {
+  if (!payload || !Array.isArray(payload.positions)) return;
+  const next = {};
+  payload.positions.forEach((pos) => {
+    if (pos && pos.id) next[pos.id] = pos;
+  });
+  state.runnerPositions = next;
+  renderRunnerMarkers();
+  updateCatchButton();
+});
+
 socket.on('party:kicked', () => {
   state.party = null;
   state.partyId = null;
   state.gameFitted = false;
   clearInterval(state.timerHandle);
+  resetChat();
+  stopLocationTracking();
+  stopPositionBroadcast();
+  clearUserLayer();
+  clearRunnerMarkers();
   setSession(null);
   closeRules();
   showView('dashboard');
@@ -654,6 +712,12 @@ function renderGame(party) {
   renderSettings($('game-settings'), party.settings);
   ensureGameMap(party);
   startGameTimer(party);
+  renderChat(party);
+  startLocationTracking();
+  startPositionBroadcast();
+  renderElimination(me);
+  renderRunnerMarkers();
+  updateCatchButton();
 }
 
 function startGameTimer(party) {
@@ -710,6 +774,7 @@ function ensureGameMap(party) {
       maxZoom: 19, attribution: '&copy; OpenStreetMap',
     }).addTo(map);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
+    map.on('dragstart', () => { state.followUser = false; });
     state.gameBoundaryGroup = L.layerGroup().addTo(map);
     state.gameMap = map;
   }
@@ -770,9 +835,515 @@ function leaveParty() {
     state.partyId = null;
     state.gameFitted = false;
     clearInterval(state.timerHandle);
+    resetChat();
+    stopLocationTracking();
+    stopPositionBroadcast();
+    clearUserLayer();
+    clearRunnerMarkers();
     setSession(null);
     showView('dashboard');
   });
+}
+
+/* ================================================================== */
+/* Hunter chat + game log                                            */
+/* ================================================================== */
+
+function normalizeRole(party, playerId) {
+  const p = party && party.players ? party.players.find((x) => x.id === playerId) : null;
+  return p ? p.role : null;
+}
+
+function amHunter() {
+  return normalizeRole(state.party, state.playerId) === 'hunter';
+}
+
+/** Merge two chat histories by message id, oldest first. */
+function mergeChat(a, b) {
+  const byId = new Map();
+  (a || []).concat(b || []).forEach((m) => {
+    if (m && m.id) byId.set(m.id, m);
+  });
+  return [...byId.values()].sort((x, y) => (x.at || 0) - (y.at || 0)).slice(-80);
+}
+
+function resetChat() {
+  state.chat = [];
+  state.chatUnread = 0;
+  closeChat();
+}
+
+function renderChat(party) {
+  if (!party) return;
+  state.chat = mergeChat(state.chat, party.chat || []);
+
+  const hunter = amHunter();
+  const input = $('chatInput');
+  const send = $('chatSend');
+  input.disabled = !hunter;
+  send.disabled = !hunter;
+  input.placeholder = hunter ? 'Message the hunters' : 'Only hunters can chat';
+  $('chatRoleHint').textContent = hunter
+    ? 'You can post here.'
+    : 'Read-only — only hunters can post.';
+
+  renderChatLog();
+  renderChatBadge();
+}
+
+function renderChatLog() {
+  const log = $('chat-log');
+  if (!log) return;
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+
+  if (!state.chat.length) {
+    log.innerHTML = '<li class="chat__empty">No messages yet.</li>';
+    return;
+  }
+  log.innerHTML = state.chat.map((m) => {
+    const time = new Date(m.at || Date.now())
+      .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (m.kind === 'log') {
+      return `<li class="chat__msg chat__msg--log">${escapeHtml(m.text)}`
+        + `<span class="chat__time">${time}</span></li>`;
+    }
+    return '<li class="chat__msg chat__msg--chat">'
+      + `<span class="chat__from">${escapeHtml(m.from || 'Hunter')}</span>`
+      + `<span class="chat__text">${escapeHtml(m.text)}</span>`
+      + `<span class="chat__time">${time}</span></li>`;
+  }).join('');
+
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function renderChatBadge() {
+  const badge = $('chatUnread');
+  if (!badge) return;
+  if (state.chatUnread > 0) {
+    badge.hidden = false;
+    badge.textContent = state.chatUnread > 9 ? '9+' : String(state.chatUnread);
+  } else {
+    badge.hidden = true;
+  }
+}
+
+function openChat() {
+  state.chatOpen = true;
+  state.chatUnread = 0;
+  $('chat-panel').hidden = false;
+  $('chatBtn').setAttribute('aria-expanded', 'true');
+  renderChatBadge();
+  renderChatLog();
+  updateCatchButton();
+  const log = $('chat-log');
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+function closeChat() {
+  state.chatOpen = false;
+  const panel = $('chat-panel');
+  if (panel) panel.hidden = true;
+  const btn = $('chatBtn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  updateCatchButton();
+}
+
+function toggleChat() {
+  if (state.chatOpen) closeChat();
+  else openChat();
+}
+
+function sendChat(event) {
+  if (event) event.preventDefault();
+  const input = $('chatInput');
+  const body = input.value.trim();
+  if (!body) return;
+  if (!amHunter()) return toast('Only hunters can chat');
+  socket.emit('chat:send', { text: body }, (res) => {
+    if (res && res.ok) input.value = '';
+    else toast((res && res.error) || 'Could not send message');
+  });
+}
+
+function doCatch() {
+  if (!amHunter() || !state.catchTargetId) return;
+  const targetId = state.catchTargetId;
+  socket.emit('player:catch', { targetId }, (res) => {
+    if (res && !res.ok) toast(res.error || 'Could not catch them');
+  });
+}
+
+/* ================================================================== */
+/* Live location + heading (view cone)                               */
+/* ================================================================== */
+
+function startLocationTracking() {
+  if (!navigator.geolocation || state.watchId != null) return;
+  state.watchId = navigator.geolocation.watchPosition(
+    onPosition,
+    () => {},
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+  );
+  bindOrientation();
+}
+
+function stopLocationTracking() {
+  if (state.watchId != null && navigator.geolocation) {
+    navigator.geolocation.clearWatch(state.watchId);
+  }
+  state.watchId = null;
+}
+
+function onPosition(pos) {
+  if (!pos || !pos.coords) return;
+  state.userLatLng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  if (Number.isFinite(pos.coords.heading)) state.gpsHeading = pos.coords.heading;
+  updateUserLayer();
+
+  const map = state.gameMap;
+  if (!map) return;
+  const target = [state.userLatLng.lat, state.userLatLng.lng];
+  if (!state.userCentered) {
+    state.userCentered = true;
+    map.setView(target, 16);
+  } else if (state.followUser) {
+    map.panTo(target);
+  }
+}
+
+/** Listen for the phone's compass so the view cone follows rotation. */
+function bindOrientation() {
+  if (state.orientationBound) return;
+  const handler = (e) => onDeviceOrientation(e);
+  if ('ondeviceorientationabsolute' in window) {
+    window.addEventListener('deviceorientationabsolute', handler, true);
+  }
+  window.addEventListener('deviceorientation', handler, true);
+  state.orientationBound = true;
+}
+
+function onDeviceOrientation(event) {
+  let heading = null;
+  const absolute = event.absolute === true;
+  if (typeof event.webkitCompassHeading === 'number'
+    && Number.isFinite(event.webkitCompassHeading)) {
+    heading = event.webkitCompassHeading; // iOS compass heading
+  } else if (typeof event.alpha === 'number' && Number.isFinite(event.alpha)) {
+    // Prefer absolute orientation; ignore relative fallback once we have it.
+    if (absolute) state.hasAbsoluteHeading = true;
+    else if (state.hasAbsoluteHeading) return;
+    heading = 360 - event.alpha; // alpha turns counter-clockwise from north
+  }
+  if (heading == null) return;
+  state.compassHeading = ((heading % 360) + 360) % 360;
+
+  // Compass events fire very often; throttle the redraw to ~12 fps.
+  const now = Date.now();
+  if (now - state.lastArrowUpdate < 80) return;
+  state.lastArrowUpdate = now;
+  updateUserLayer();
+}
+
+/** iOS 13+ needs a user gesture before orientation events are delivered. */
+function requestCompass() {
+  const DOE = window.DeviceOrientationEvent;
+  if (DOE && typeof DOE.requestPermission === 'function') {
+    DOE.requestPermission().then((res) => {
+      if (res === 'granted') bindOrientation();
+      else toast('Compass permission denied');
+    }).catch(() => {});
+  } else {
+    bindOrientation();
+  }
+}
+
+function currentHeading() {
+  if (state.compassHeading != null) return state.compassHeading;
+  if (state.gpsHeading != null) return state.gpsHeading;
+  return 0;
+}
+
+/** Point at `distM` metres from (lat, lng) on the given bearing. */
+function destinationPoint(lat, lng, bearingDeg, distM) {
+  const R = 6371000;
+  const d = distM / R;
+  const br = (bearingDeg * Math.PI) / 180;
+  const lat1 = (lat * Math.PI) / 180;
+  const lon1 = (lng * Math.PI) / 180;
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d)
+    + Math.cos(lat1) * Math.sin(d) * Math.cos(br));
+  const lon2 = lon1 + Math.atan2(
+    Math.sin(br) * Math.sin(d) * Math.cos(lat1),
+    Math.cos(d) - Math.sin(lat1) * Math.sin(lat2)
+  );
+  return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
+}
+
+/** Build a closed wedge polygon for the field-of-view cone. */
+function conePoints(lat, lng, headingDeg, radiusM, spreadDeg) {
+  const start = headingDeg - spreadDeg / 2;
+  const steps = 14;
+  const points = [[lat, lng]];
+  for (let i = 0; i <= steps; i += 1) {
+    points.push(destinationPoint(lat, lng, start + (spreadDeg * i) / steps, radiusM));
+  }
+  points.push([lat, lng]);
+  return points;
+}
+
+function updateUserLayer() {
+  const map = state.gameMap;
+  if (!map || !state.userLatLng) return;
+  const { lat, lng } = state.userLatLng;
+
+  if (!state.userMarker) {
+    state.userMarker = L.circleMarker([lat, lng], {
+      radius: 7, color: '#ffffff', weight: 2,
+      fillColor: USER_LOCATION_COLOR, fillOpacity: 1,
+    }).addTo(map);
+  } else {
+    state.userMarker.setLatLng([lat, lng]);
+  }
+
+  const points = conePoints(lat, lng, currentHeading(), USER_CONE_RADIUS_M, USER_CONE_SPREAD_DEG);
+  if (!state.userCone) {
+    state.userCone = L.polygon(points, {
+      color: USER_LOCATION_COLOR, weight: 1, opacity: 0.9,
+      fillColor: USER_LOCATION_COLOR, fillOpacity: 0.25, interactive: false,
+    }).addTo(map);
+  } else {
+    state.userCone.setLatLngs(points);
+  }
+
+  updateRunnerArrows();
+  updateCatchButton();
+}
+
+function clearUserLayer() {
+  const map = state.gameMap;
+  if (map) {
+    if (state.userMarker) map.removeLayer(state.userMarker);
+    if (state.userCone) map.removeLayer(state.userCone);
+  }
+  state.userMarker = null;
+  state.userCone = null;
+  state.userLatLng = null;
+  state.userCentered = false;
+}
+
+function locateMe() {
+  requestCompass();
+  startLocationTracking();
+  if (state.userLatLng && state.gameMap) {
+    state.followUser = true;
+    state.gameMap.setView([state.userLatLng.lat, state.userLatLng.lng], 16);
+  } else {
+    toast('Waiting for your location…');
+  }
+}
+
+/* ================================================================== */
+/* Runner tracking (hunters): markers, distance + direction arrows    */
+/* ================================================================== */
+
+function startPositionBroadcast() {
+  if (state.positionTimer) return;
+  const send = () => {
+    if (!state.userLatLng) return;
+    socket.emit('player:position', {
+      position: { lat: state.userLatLng.lat, lng: state.userLatLng.lng },
+      heading: currentHeading(),
+    });
+  };
+  send();
+  state.positionTimer = setInterval(send, 3000);
+}
+
+function stopPositionBroadcast() {
+  clearInterval(state.positionTimer);
+  state.positionTimer = null;
+}
+
+/** Great-circle distance in metres between two {lat,lng} points. */
+function distanceM(a, b) {
+  if (!a || !b) return null;
+  const R = 6371000;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** Compass bearing (degrees from north) from point a to point b. */
+function bearingDeg(a, b) {
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2)
+    - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+/** Tidy distance label, rounded to hide GPS jitter. */
+function formatDistance(m) {
+  if (m == null) return '? m';
+  if (m >= 1000) return (m / 1000).toFixed(1) + ' km';
+  if (m >= 100) return '~' + (Math.round(m / 10) * 10) + ' m';
+  return '~' + (Math.round(m / 5) * 5) + ' m';
+}
+
+function renderRunnerMarkers() {
+  const map = state.gameMap;
+  if (!map) return;
+
+  const active = Object.keys(state.runnerPositions);
+
+  // Drop markers for runners that vanished or were caught.
+  Object.keys(state.runnerMarkers).forEach((id) => {
+    const pos = state.runnerPositions[id];
+    if (!pos || pos.caught) {
+      map.removeLayer(state.runnerMarkers[id].marker);
+      delete state.runnerMarkers[id];
+    }
+  });
+
+  active.forEach((id) => {
+    const pos = state.runnerPositions[id];
+    if (!pos || pos.caught) return;
+    if (!state.runnerMarkers[id]) {
+      const icon = L.divIcon({
+        className: 'runner-pin-wrap',
+        html: '<div class="runner-pin">'
+          + '<div class="runner-pin__arrow"></div>'
+          + '<div class="runner-pin__body">'
+          + '<span class="runner-pin__dot"></span>'
+          + '<span class="runner-pin__name"></span>'
+          + '<span class="runner-pin__dist"></span>'
+          + '</div></div>',
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
+      });
+      const marker = L.marker([pos.lat, pos.lng], { icon, interactive: false, zIndexOffset: 500 })
+        .addTo(map);
+      const el = marker.getElement();
+      state.runnerMarkers[id] = {
+        marker,
+        arrow: el ? el.querySelector('.runner-pin__arrow') : null,
+        name: el ? el.querySelector('.runner-pin__name') : null,
+        dist: el ? el.querySelector('.runner-pin__dist') : null,
+      };
+    }
+    state.runnerMarkers[id].marker.setLatLng([pos.lat, pos.lng]);
+  });
+
+  updateRunnerArrows();
+}
+
+function updateRunnerArrows() {
+  const me = state.userLatLng;
+  const heading = currentHeading();
+  Object.keys(state.runnerMarkers).forEach((id) => {
+    const pos = state.runnerPositions[id];
+    const view = state.runnerMarkers[id];
+    if (!pos || !view) return;
+
+    const player = playerById(id);
+    if (view.name) view.name.textContent = (player ? player.name : 'Runner') + ' ';
+
+    if (me) {
+      const dist = distanceM(me, { lat: pos.lat, lng: pos.lng });
+      if (view.dist) view.dist.textContent = formatDistance(dist);
+      const rel = bearingDeg(me, { lat: pos.lat, lng: pos.lng }) - heading;
+      if (view.arrow) {
+        view.arrow.style.transform = 'rotate(' + Math.round(rel) + 'deg)';
+        view.arrow.style.display = '';
+      }
+    } else if (view.dist) {
+      view.dist.textContent = '? m';
+    }
+  });
+}
+
+function clearRunnerMarkers() {
+  const map = state.gameMap;
+  if (map) {
+    Object.keys(state.runnerMarkers).forEach((id) => {
+      map.removeLayer(state.runnerMarkers[id].marker);
+    });
+  }
+  state.runnerMarkers = {};
+  state.runnerPositions = {};
+  state.catchTargetId = null;
+  const btn = $('catchRunnerBtn');
+  if (btn) btn.hidden = true;
+}
+
+function playerById(id) {
+  if (!state.party || !state.party.players) return null;
+  return state.party.players.find((p) => p.id === id) || null;
+}
+
+/** Show the Catch button when a live runner is within reach. */
+function updateCatchButton() {
+  const btn = $('catchRunnerBtn');
+  if (!btn) return;
+
+  let best = null;
+  if (amHunter() && state.userLatLng) {
+    Object.keys(state.runnerPositions).forEach((id) => {
+      const pos = state.runnerPositions[id];
+      if (!pos || pos.caught) return;
+      const dist = distanceM(state.userLatLng, { lat: pos.lat, lng: pos.lng });
+      if (dist != null && dist <= CATCH_RADIUS_M && (!best || dist < best.dist)) {
+        best = { id, dist };
+      }
+    });
+  }
+
+  if (best && !state.chatOpen) {
+    state.catchTargetId = best.id;
+    const player = playerById(best.id);
+    btn.textContent = 'Catch ' + (player ? player.name : 'runner');
+    btn.hidden = false;
+  } else {
+    state.catchTargetId = null;
+    btn.hidden = true;
+  }
+}
+
+function renderElimination(me) {
+  const caught = Boolean(me && me.caught);
+  const overlay = $('eliminated');
+  const banner = $('elimBanner');
+  if (!overlay || !banner) return;
+
+  banner.hidden = !caught;
+  if (!caught) {
+    overlay.hidden = true;
+    state.selfCaught = false;
+    return;
+  }
+  if (state.selfCaught) return; // already acknowledged; keep the banner only
+  state.selfCaught = true;
+  $('eliminatedBy').textContent = me.caughtBy
+    ? 'Caught by ' + me.caughtBy + '.'
+    : 'You were caught.';
+  overlay.hidden = false;
+  updateCatchButton();
+  renderRunnerMarkers();
+}
+
+function dismissEliminated() {
+  $('eliminated').hidden = true;
+  const base = state.party && state.party.settings && state.party.settings.base;
+  if (base && state.gameMap) {
+    state.followUser = false;
+    state.gameMap.setView([base.lat, base.lng], 16);
+  }
 }
 
 /* ================================================================== */
@@ -829,6 +1400,14 @@ function wire() {
     });
   });
   $('leaveBtn').addEventListener('click', leaveParty);
+
+  // In-game HUD: chat, live location and catching.
+  $('chatBtn').addEventListener('click', toggleChat);
+  $('chatClose').addEventListener('click', closeChat);
+  $('chat-form').addEventListener('submit', sendChat);
+  $('locateMeBtn').addEventListener('click', locateMe);
+  $('catchRunnerBtn').addEventListener('click', doCatch);
+  $('eliminatedClose').addEventListener('click', dismissEliminated);
 }
 
 /* ================================================================== */

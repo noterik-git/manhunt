@@ -260,6 +260,40 @@
 
       <div class="hud hud--bl">
         <button id="rulesBtn" class="hud-btn" type="button">Rules</button>
+        <button id="locateMeBtn" class="hud-btn" type="button">Locate</button>
+        <button id="chatBtn" class="hud-btn" type="button" aria-expanded="false">
+          Chat<span id="chatUnread" class="hud-badge" hidden>0</span>
+        </button>
+      </div>
+
+      <section id="chat-panel" class="chat" hidden aria-label="Hunter chat">
+        <header class="chat__head">
+          <div class="chat__heading">
+            <span class="chat__title">Hunter chat</span>
+            <span id="chatRoleHint" class="chat__hint"></span>
+          </div>
+          <button id="chatClose" class="chat__close" type="button" aria-label="Close chat">&#10005;</button>
+        </header>
+        <ul id="chat-log" class="chat__log" aria-live="polite"></ul>
+        <form id="chat-form" class="chat__compose" autocomplete="off">
+          <input id="chatInput" class="chat__input" type="text" maxlength="240"
+            placeholder="Message the hunters" aria-label="Chat message" />
+          <button id="chatSend" class="chat__send" type="submit">Send</button>
+        </form>
+      </section>
+
+      <div id="elimBanner" class="elim-banner" hidden>Eliminated &mdash; return to the base</div>
+
+      <button id="catchRunnerBtn" class="catch-action" type="button" hidden>Catch</button>
+
+      <div id="eliminated" class="eliminated" hidden>
+        <div class="eliminated__card" role="alertdialog" aria-label="Eliminated">
+          <span class="eliminated__tag">Eliminated</span>
+          <h2 class="eliminated__title">You&rsquo;ve been caught</h2>
+          <p id="eliminatedBy" class="eliminated__text"></p>
+          <p class="eliminated__text">Head back to the base.</p>
+          <button id="eliminatedClose" class="eliminated__btn" type="button">Continue</button>
+        </div>
       </div>
     </section>
 

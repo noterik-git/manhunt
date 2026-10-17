@@ -217,18 +217,71 @@ function sanitize(party) {
     counts: countRoles(party),
     createdAt: party.createdAt,
     startedAt: party.startedAt,
+    chat: (party.chat || []).slice(-60),
     players: [...party.players.values()].map((p) => ({
       id: p.id,
       name: p.name,
       role: p.role,
       pair: p.pair,
       connected: p.connected,
+      caught: !!p.caught,
+      caughtBy: p.caughtBy || null,
     })),
   };
 }
 
 function broadcast(party) {
   io.to(party.id).emit('party:update', sanitize(party));
+}
+
+/** Append a message to the party's rolling chat/log history. */
+function pushChat(party, message) {
+  if (!Array.isArray(party.chat)) party.chat = [];
+  party.chat.push(message);
+  if (party.chat.length > 60) party.chat.splice(0, party.chat.length - 60);
+  return message;
+}
+
+// How close a hunter must be to a runner to be allowed to catch them.
+// A little tolerance is added on top because GPS jitters and positions are
+// only refreshed every few seconds.
+const CATCH_RADIUS_M = 15;
+const CATCH_TOLERANCE_M = 10;
+
+/** Great-circle distance in metres between two {lat,lng} points, or null. */
+function geoDistance(a, b) {
+  if (!a || !b) return null;
+  const R = 6371000;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** Runner positions, shared with hunters only. */
+function sendRunnerPositions(party) {
+  const positions = [];
+  for (const p of party.players.values()) {
+    if (p.role === 'runner' && p.pos) {
+      positions.push({
+        id: p.id,
+        lat: p.pos.lat,
+        lng: p.pos.lng,
+        heading: p.pos.heading,
+        at: p.pos.at,
+        caught: !!p.caught,
+      });
+    }
+  }
+  const payload = { positions };
+  for (const p of party.players.values()) {
+    if (p.role === 'hunter' && p.connected && p.socketId) {
+      io.to(p.socketId).emit('player:positions', payload);
+    }
+  }
 }
 
 function getPartyForSocket(socket) {
@@ -285,6 +338,7 @@ io.on('connection', (socket) => {
       settings: normalizeSettings(settingsInput),
       createdAt: Date.now(),
       startedAt: null,
+      chat: [],
       players: new Map(),
     };
     party.players.set(playerId, {
@@ -349,6 +403,7 @@ io.on('connection', (socket) => {
 
     cb({ ok: true, id: party.id, state: sanitize(party) });
     broadcast(party);
+    sendRunnerPositions(party);
   });
 
   socket.on('party:reconnect', (payload = {}, done) => {
@@ -368,6 +423,7 @@ io.on('connection', (socket) => {
 
     cb({ ok: true, id: party.id, state: sanitize(party) });
     broadcast(party);
+    sendRunnerPositions(party);
   });
 
   socket.on('party:settings', (payload = {}, done) => {
@@ -394,9 +450,12 @@ io.on('connection', (socket) => {
       return cb({ ok: false, error: 'Invalid role.' });
     }
     target.role = role;
+    target.caught = false;
+    target.caughtBy = null;
     recomputePairs(party);
     cb({ ok: true, state: sanitize(party) });
     broadcast(party);
+    sendRunnerPositions(party);
   });
 
   socket.on('party:start', (_payload, done) => {
@@ -412,9 +471,15 @@ io.on('connection', (socket) => {
 
     party.status = 'active';
     party.startedAt = Date.now();
+    for (const p of party.players.values()) {
+      p.caught = false;
+      p.caughtBy = null;
+      p.pos = null;
+    }
     cb({ ok: true, state: sanitize(party) });
     io.to(party.id).emit('party:started', sanitize(party));
     broadcast(party);
+    sendRunnerPositions(party);
   });
 
   socket.on('party:kick', (payload = {}, done) => {
@@ -449,6 +514,98 @@ io.on('connection', (socket) => {
       socket.leave(party.id);
     }
     socket.data.partyId = null;
+    cb({ ok: true });
+  });
+
+  // Hunters-only chat. Messages and game logs are broadcast to the whole
+  // party so runners can follow what is happening.
+  socket.on('chat:send', (payload = {}, done) => {
+    const cb = ack(done);
+    const party = getPartyForSocket(socket);
+    if (!party) return cb({ ok: false, error: 'Not in a party.' });
+    const player = party.players.get(socket.data.playerId);
+    if (!player || player.role !== 'hunter') {
+      return cb({ ok: false, error: 'Only hunters can chat.' });
+    }
+    const body = text(payload.text, 240).trim();
+    if (!body) return cb({ ok: false, error: 'Type a message first.' });
+
+    const message = pushChat(party, {
+      id: crypto.randomUUID(),
+      kind: 'chat',
+      fromId: player.id,
+      from: player.name,
+      role: 'hunter',
+      text: body,
+      at: Date.now(),
+    });
+    io.to(party.id).emit('chat:message', message);
+    cb({ ok: true });
+  });
+
+  // A hunter physically catches a runner. Only allowed when the two are
+  // close together according to their last reported positions.
+  socket.on('player:catch', (payload = {}, done) => {
+    const cb = ack(done);
+    const party = getPartyForSocket(socket);
+    if (!party) return cb({ ok: false, error: 'Not in a party.' });
+    if (party.status !== 'active') return cb({ ok: false, error: 'The game is not running.' });
+
+    const hunter = party.players.get(socket.data.playerId);
+    if (!hunter || hunter.role !== 'hunter') {
+      return cb({ ok: false, error: 'Only hunters can catch runners.' });
+    }
+    const target = party.players.get(String(payload.targetId || ''));
+    if (!target || target.role !== 'runner') {
+      return cb({ ok: false, error: 'That is not a runner.' });
+    }
+    if (target.caught) return cb({ ok: false, error: `${target.name} was already caught.` });
+
+    const distance = geoDistance(hunter.pos, target.pos);
+    if (distance == null) {
+      return cb({ ok: false, error: 'Waiting for both players\u2019 locations.' });
+    }
+    if (distance > CATCH_RADIUS_M + CATCH_TOLERANCE_M) {
+      return cb({ ok: false, error: 'Get closer to catch them.' });
+    }
+
+    target.caught = true;
+    target.caughtAt = Date.now();
+    target.caughtBy = hunter.name;
+
+    const message = pushChat(party, {
+      id: crypto.randomUUID(),
+      kind: 'log',
+      fromId: hunter.id,
+      from: hunter.name,
+      role: 'hunter',
+      text: `HUNTER ${hunter.name} just caught RUNNER ${target.name}`,
+      at: Date.now(),
+    });
+    io.to(party.id).emit('chat:message', message);
+    broadcast(party);
+    sendRunnerPositions(party);
+    cb({ ok: true });
+  });
+
+  // Players share their position; runners' positions are relayed to hunters.
+  socket.on('player:position', (payload = {}, done) => {
+    const cb = ack(done);
+    const party = getPartyForSocket(socket);
+    if (!party) return cb({ ok: false, error: 'Not in a party.' });
+    const player = party.players.get(socket.data.playerId);
+    if (!player) return cb({ ok: false, error: 'Player not found.' });
+
+    const point = toLatLng(payload.position || payload);
+    if (!point) return cb({ ok: false, error: 'Invalid position.' });
+    const heading = Number(payload.heading);
+    player.pos = {
+      lat: point.lat,
+      lng: point.lng,
+      heading: Number.isFinite(heading) ? ((heading % 360) + 360) % 360 : null,
+      at: Date.now(),
+    };
+    sendRunnerPositions(party);
     cb({ ok: true });
   });
 

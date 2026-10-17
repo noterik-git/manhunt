@@ -96,8 +96,12 @@ Manhunt/
   Dráva utca (towards Árpád híd) and the Buda side are excluded. Barrier streets
   are labelled. Kept in `data/templates.json` so it can be refined.
 - **Mission locations are not invented** and remain host-configurable.
-- **Live GPS tracking is not implemented yet.** The in-game map is for reference
-  only.
+- **Live GPS tracking.** Each player broadcasts their position every few seconds.
+  Hunters see the live position of every runner on the map, each labelled with the
+  distance and a direction arrow that rotates as the hunter turns their phone.
+  Your own dot is drawn with a heading cone. Hunter chat is posted by hunters and
+  read by everyone; a runner is eliminated when a hunter within reach presses
+  **Catch**, which is logged to the chat.
 
 ## Not included (by design)
 
