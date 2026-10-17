@@ -59,7 +59,7 @@ const DEFAULT_CENTER = [47.4979, 19.0402]; // Budapest city centre (host adjusts
 // View cone drawn around the player's live location.
 const USER_CONE_RADIUS_M = 70;
 const USER_CONE_SPREAD_DEG = 55;
-const USER_LOCATION_COLOR = '#3d9bff';
+const USER_LOCATION_COLOR = '#22d3ee';
 
 // How close a hunter must be (using last reported positions) to catch.
 const CATCH_RADIUS_M = 15;
@@ -357,8 +357,8 @@ function drawBoundaryGroup(group, boundary, opts = {}) {
     if (pts.length < 3) return;
     pts.forEach((p) => bounds.extend(p));
     const poly = L.polygon(pts, {
-      color: '#ff5252', weight: 2, opacity: 0.95,
-      fillColor: '#e03131', fillOpacity: opts.fillOpacity == null ? 0.14 : opts.fillOpacity,
+      color: '#5b9bff', weight: 2, opacity: 0.95,
+      fillColor: '#2f6fed', fillOpacity: opts.fillOpacity == null ? 0.14 : opts.fillOpacity,
     });
     if (area.name) {
       poly.bindTooltip(area.name, { permanent: true, direction: 'center', className: 'map-label map-label--area' });
@@ -370,7 +370,7 @@ function drawBoundaryGroup(group, boundary, opts = {}) {
     const pts = (edge.path || []).map(toLL);
     if (pts.length < 2) return;
     pts.forEach((p) => bounds.extend(p));
-    const line = L.polyline(pts, { color: '#ff6b6b', weight: 3.5, opacity: 0.95, lineCap: 'round' });
+    const line = L.polyline(pts, { color: '#8fb2ef', weight: 3, opacity: 0.9, lineCap: 'round' });
     if (edge.name) {
       line.bindTooltip(edge.name, { permanent: true, direction: 'center', className: 'map-label map-label--edge' });
     }
@@ -381,7 +381,7 @@ function drawBoundaryGroup(group, boundary, opts = {}) {
     const pts = (route.path || []).map(toLL);
     if (pts.length < 2) return;
     pts.forEach((p) => bounds.extend(p));
-    const line = L.polyline(pts, { color: '#35c46a', weight: 5, opacity: 0.9, dashArray: '12 7', lineCap: 'round' });
+    const line = L.polyline(pts, { color: '#2fbf71', weight: 5, opacity: 0.9, dashArray: '12 7', lineCap: 'round' });
     if (route.name) {
       line.bindTooltip(route.name, { permanent: true, direction: 'center', className: 'map-label map-label--route' });
     }
@@ -459,7 +459,7 @@ function updateRadiusCircle() {
   const radius = Number($('areaRadius').value);
   if (!state.areaCircle) {
     state.areaCircle = L.circle([state.base.lat, state.base.lng], {
-      radius, color: '#e03131', weight: 1.5, fillColor: '#e03131', fillOpacity: 0.08,
+      radius, color: '#5b9bff', weight: 1.5, fillColor: '#2f6fed', fillOpacity: 0.08,
     }).addTo(state.createMap);
   } else {
     state.areaCircle.setLatLng([state.base.lat, state.base.lng]);
@@ -718,6 +718,7 @@ function renderGame(party) {
   renderElimination(me);
   renderRunnerMarkers();
   updateCatchButton();
+  updateAreaWarning();
 }
 
 function startGameTimer(party) {
@@ -796,8 +797,8 @@ function ensureGameMap(party) {
     state.gameBoundaryGroup.clearLayers();
     if (base) {
       state.gameAreaCircle = L.circle([base.lat, base.lng], {
-        radius: party.settings.area.radiusM, color: '#e03131', weight: 1.5,
-        fillColor: '#e03131', fillOpacity: 0.08,
+        radius: party.settings.area.radiusM, color: '#5b9bff', weight: 1.5,
+        fillColor: '#2f6fed', fillOpacity: 0.08,
       }).addTo(map);
       if (!state.gameFitted) { map.setView([base.lat, base.lng], 14); state.gameFitted = true; }
     }
@@ -999,6 +1000,7 @@ function onPosition(pos) {
   state.userLatLng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
   if (Number.isFinite(pos.coords.heading)) state.gpsHeading = pos.coords.heading;
   updateUserLayer();
+  updateAreaWarning();
 
   const map = state.gameMap;
   if (!map) return;
@@ -1009,6 +1011,39 @@ function onPosition(pos) {
   } else if (state.followUser) {
     map.panTo(target);
   }
+}
+
+/** Big red banner while the player's live position is outside the play area. */
+function updateAreaWarning() {
+  const banner = $('areaWarning');
+  const view = $('view-game');
+  if (!banner) return;
+  if (!state.userLatLng) {
+    banner.hidden = true;
+    if (view) view.classList.remove('is-out');
+    return;
+  }
+  const inside = isPlayable(state.userLatLng.lat, state.userLatLng.lng);
+  banner.hidden = inside;
+  if (view) view.classList.toggle('is-out', !inside);
+}
+
+/** True when a point is inside the running game's play area. */
+function isPlayable(lat, lng) {
+  const s = state.party && state.party.settings;
+  const boundary = (s && s.area && s.area.boundary) || null;
+  if (boundary) return isPlayablePoint(lat, lng, boundary);
+  const base = s && s.base;
+  const radius = s && s.area && s.area.radiusM;
+  if (base && radius) return distanceM({ lat, lng }, base) <= radius;
+  return true;
+}
+
+function clearAreaWarning() {
+  const banner = $('areaWarning');
+  if (banner) banner.hidden = true;
+  const view = $('view-game');
+  if (view) view.classList.remove('is-out');
 }
 
 /** Listen for the phone's compass so the view cone follows rotation. */
@@ -1129,6 +1164,7 @@ function clearUserLayer() {
   state.userCone = null;
   state.userLatLng = null;
   state.userCentered = false;
+  clearAreaWarning();
 }
 
 function locateMe() {
