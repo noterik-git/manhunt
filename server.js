@@ -217,6 +217,13 @@ function sanitize(party) {
     counts: countRoles(party),
     createdAt: party.createdAt,
     startedAt: party.startedAt,
+    // Server-authoritative schedule. Clients derive every countdown from
+    // these timestamps plus `serverTime`, never from their own clock alone.
+    huntStartsAt: party.huntStartsAt || null,
+    huntEndsAt: party.huntEndsAt || null,
+    winner: party.winner || null,
+    endedAt: party.endedAt || null,
+    serverTime: Date.now(),
     chat: (party.chat || []).slice(-60),
     players: [...party.players.values()].map((p) => ({
       id: p.id,
@@ -261,26 +268,187 @@ function geoDistance(a, b) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-/** Runner positions, shared with hunters only. */
-function sendRunnerPositions(party) {
-  const positions = [];
+/* ------------------------------------------------------------------ */
+/* Runner tracking, location reveals and win conditions                */
+/* ------------------------------------------------------------------ */
+
+// Hunters are handed exact runner coordinates only on this interval. The
+// default is 10 minutes; the environment override exists so the cadence can be
+// tuned (or shortened in tests) without touching the game rules.
+const REVEAL_INTERVAL_MS = Math.max(
+  200,
+  Number(process.env.MANHUNT_REVEAL_MS) || 10 * 60 * 1000,
+);
+
+/**
+ * Active (not yet eliminated) runner pairs, keyed by pair number.
+ * A pair is eliminated as soon as any of its members is caught.
+ */
+function activePairs(party) {
+  const pairs = new Map();
   for (const p of party.players.values()) {
-    if (p.role === 'runner' && p.pos) {
-      positions.push({
-        id: p.id,
-        lat: p.pos.lat,
-        lng: p.pos.lng,
-        heading: p.pos.heading,
-        at: p.pos.at,
-        caught: !!p.caught,
+    if (p.role !== 'runner' || !p.pair) continue;
+    if (!pairs.has(p.pair)) pairs.set(p.pair, []);
+    pairs.get(p.pair).push(p);
+  }
+  for (const [pair, members] of [...pairs]) {
+    if (members.some((m) => m.caught)) pairs.delete(pair);
+  }
+  return pairs;
+}
+
+/** Distance in metres from a point to the closest member of a pair, or null. */
+function pairDistance(members, from) {
+  let best = null;
+  for (const m of members) {
+    const d = geoDistance(from, m.pos);
+    if (d != null && (best == null || d < best)) best = d;
+  }
+  return best;
+}
+
+/**
+ * Sends each hunter the *distance* to every active runner pair — never a
+ * coordinate. Distances are rounded so they cannot be triangulated into an
+ * exact position between reveals.
+ */
+function sendPairDistances(party) {
+  if (!party || party.status !== 'active') return;
+  const pairs = activePairs(party);
+  for (const hunter of party.players.values()) {
+    if (hunter.role !== 'hunter' || !hunter.connected || !hunter.socketId) continue;
+    const list = [];
+    for (const [pair, members] of pairs) {
+      const d = pairDistance(members, hunter.pos);
+      if (d == null) continue;
+      list.push({
+        pair,
+        distance: Math.round(d / 10) * 10,
+        canCatch: d <= CATCH_RADIUS_M + CATCH_TOLERANCE_M,
       });
     }
+    list.sort((a, b) => a.distance - b.distance);
+    io.to(hunter.socketId).emit('runner:distances', { at: Date.now(), pairs: list });
   }
-  const payload = { positions };
+}
+
+/** One coordinate per active pair: the centre of its members' positions. */
+function revealPositions(party) {
+  if (!party || party.status !== 'active') return;
+  const pins = [];
+  for (const [pair, members] of activePairs(party)) {
+    const withPos = members.filter((m) => m.pos);
+    if (!withPos.length) continue;
+    pins.push({
+      pair,
+      lat: withPos.reduce((s, m) => s + m.pos.lat, 0) / withPos.length,
+      lng: withPos.reduce((s, m) => s + m.pos.lng, 0) / withPos.length,
+    });
+  }
+  party.revealed = pins;
+  party.revealedAt = Date.now();
+  party.nextRevealAt = party.revealedAt + REVEAL_INTERVAL_MS;
+  sendReveal(party);
+}
+
+/** Sends the latest reveal to every hunter, or to a single reconnecting one. */
+function sendReveal(party, socket) {
+  const payload = {
+    at: party.revealedAt || null,
+    nextAt: party.nextRevealAt || null,
+    pins: party.revealed || [],
+  };
+  if (socket) {
+    io.to(socket.id).emit('party:reveal', payload);
+    return;
+  }
   for (const p of party.players.values()) {
     if (p.role === 'hunter' && p.connected && p.socketId) {
-      io.to(p.socketId).emit('player:positions', payload);
+      io.to(p.socketId).emit('party:reveal', payload);
     }
+  }
+}
+
+/** Clears the reveal and full-time timers for a party. */
+function clearPartyTimers(party) {
+  if (!party) return;
+  if (party.revealKick) clearTimeout(party.revealKick);
+  if (party.revealTimer) clearInterval(party.revealTimer);
+  if (party.endTimer) clearTimeout(party.endTimer);
+  party.revealKick = null;
+  party.revealTimer = null;
+  party.endTimer = null;
+}
+
+/**
+ * Server-authoritative schedule: reveals every 10 minutes once the head start
+ * is over, and full time when the game timer runs out.
+ */
+function scheduleParty(party) {
+  clearPartyTimers(party);
+  party.endTimer = setTimeout(() => {
+    if (party.status !== 'active') return;
+    endGame(party, activePairs(party).size ? 'runners' : 'hunters');
+  }, Math.max(0, party.huntEndsAt - Date.now()));
+  party.endTimer.unref?.();
+
+  const firstRevealIn = Math.max(0, party.huntStartsAt + REVEAL_INTERVAL_MS - Date.now());
+  party.revealKick = setTimeout(() => {
+    if (party.status !== 'active') return;
+    revealPositions(party);
+    party.revealTimer = setInterval(() => {
+      if (party.status !== 'active') return clearPartyTimers(party);
+      revealPositions(party);
+    }, REVEAL_INTERVAL_MS);
+    party.revealTimer.unref?.();
+  }, firstRevealIn);
+  party.revealKick.unref?.();
+}
+
+/**
+ * Ends the game server-side, decides the winner and stops every timer so no
+ * further location updates are broadcast.
+ */
+function endGame(party, winner) {
+  if (!party || party.status !== 'active') return;
+  party.status = 'ended';
+  party.winner = winner;
+  party.endedAt = Date.now();
+  clearPartyTimers(party);
+  io.to(party.id).emit('party:ended', { winner, at: party.endedAt });
+  broadcast(party);
+}
+
+/**
+ * Starts the server-authoritative clock. The head start runs first and the
+ * main game timer only begins once it is over.
+ */
+function beginGame(party) {
+  party.status = 'active';
+  party.startedAt = Date.now();
+  party.huntStartsAt = party.startedAt + party.settings.escapeMin * 60 * 1000;
+  party.huntEndsAt = party.huntStartsAt + party.settings.durationMin * 60 * 1000;
+  party.winner = null;
+  party.endedAt = null;
+  party.revealed = [];
+  party.revealedAt = null;
+  party.nextRevealAt = party.huntStartsAt + REVEAL_INTERVAL_MS;
+  for (const p of party.players.values()) {
+    p.caught = false;
+    p.caughtBy = null;
+    p.pos = null;
+  }
+  scheduleParty(party);
+}
+
+/** Marks a whole runner pair as caught and stops tracking its members. */
+function eliminatePair(members, hunterName) {
+  const now = Date.now();
+  for (const m of members) {
+    m.caught = true;
+    m.caughtAt = now;
+    m.caughtBy = hunterName;
+    m.pos = null;
   }
 }
 
@@ -338,6 +506,16 @@ io.on('connection', (socket) => {
       settings: normalizeSettings(settingsInput),
       createdAt: Date.now(),
       startedAt: null,
+      huntStartsAt: null,
+      huntEndsAt: null,
+      winner: null,
+      endedAt: null,
+      revealed: [],
+      revealedAt: null,
+      nextRevealAt: null,
+      revealKick: null,
+      revealTimer: null,
+      endTimer: null,
       chat: [],
       players: new Map(),
     };
@@ -403,7 +581,8 @@ io.on('connection', (socket) => {
 
     cb({ ok: true, id: party.id, state: sanitize(party) });
     broadcast(party);
-    sendRunnerPositions(party);
+    sendPairDistances(party);
+    if (joinRole === 'hunter') sendReveal(party, socket);
   });
 
   socket.on('party:reconnect', (payload = {}, done) => {
@@ -423,7 +602,8 @@ io.on('connection', (socket) => {
 
     cb({ ok: true, id: party.id, state: sanitize(party) });
     broadcast(party);
-    sendRunnerPositions(party);
+    sendPairDistances(party);
+    if (player.role === 'hunter') sendReveal(party, socket);
   });
 
   socket.on('party:settings', (payload = {}, done) => {
@@ -455,7 +635,7 @@ io.on('connection', (socket) => {
     recomputePairs(party);
     cb({ ok: true, state: sanitize(party) });
     broadcast(party);
-    sendRunnerPositions(party);
+    sendPairDistances(party);
   });
 
   socket.on('party:start', (_payload, done) => {
@@ -469,17 +649,12 @@ io.on('connection', (socket) => {
     if (counts.hunter < 1) return cb({ ok: false, error: 'Assign at least one hunter.' });
     if (counts.runner < 1) return cb({ ok: false, error: 'Assign at least one runner.' });
 
-    party.status = 'active';
-    party.startedAt = Date.now();
-    for (const p of party.players.values()) {
-      p.caught = false;
-      p.caughtBy = null;
-      p.pos = null;
-    }
+    beginGame(party);
     cb({ ok: true, state: sanitize(party) });
     io.to(party.id).emit('party:started', sanitize(party));
     broadcast(party);
-    sendRunnerPositions(party);
+    sendPairDistances(party);
+    sendReveal(party);
   });
 
   socket.on('party:kick', (payload = {}, done) => {
@@ -543,8 +718,9 @@ io.on('connection', (socket) => {
     cb({ ok: true });
   });
 
-  // A hunter physically catches a runner. Only allowed when the two are
-  // close together according to their last reported positions.
+  // A hunter physically catches a runner pair. Only allowed when the hunter is
+  // close to one of the pair's members according to the last known positions.
+  // Catching a pair eliminates it: both members stop being tracked.
   socket.on('player:catch', (payload = {}, done) => {
     const cb = ack(done);
     const party = getPartyForSocket(socket);
@@ -555,23 +731,20 @@ io.on('connection', (socket) => {
     if (!hunter || hunter.role !== 'hunter') {
       return cb({ ok: false, error: 'Only hunters can catch runners.' });
     }
-    const target = party.players.get(String(payload.targetId || ''));
-    if (!target || target.role !== 'runner') {
-      return cb({ ok: false, error: 'That is not a runner.' });
-    }
-    if (target.caught) return cb({ ok: false, error: `${target.name} was already caught.` });
 
-    const distance = geoDistance(hunter.pos, target.pos);
+    const pair = Number(payload.pair);
+    const members = activePairs(party).get(pair);
+    if (!members) return cb({ ok: false, error: 'That runner pair is no longer active.' });
+
+    const distance = pairDistance(members, hunter.pos);
     if (distance == null) {
-      return cb({ ok: false, error: 'Waiting for both players\u2019 locations.' });
+      return cb({ ok: false, error: 'Waiting for the runners\u2019 locations.' });
     }
     if (distance > CATCH_RADIUS_M + CATCH_TOLERANCE_M) {
       return cb({ ok: false, error: 'Get closer to catch them.' });
     }
 
-    target.caught = true;
-    target.caughtAt = Date.now();
-    target.caughtBy = hunter.name;
+    eliminatePair(members, hunter.name);
 
     const message = pushChat(party, {
       id: crypto.randomUUID(),
@@ -579,22 +752,34 @@ io.on('connection', (socket) => {
       fromId: hunter.id,
       from: hunter.name,
       role: 'hunter',
-      text: `HUNTER ${hunter.name} just caught RUNNER ${target.name}`,
+      text: `HUNTER ${hunter.name} just caught RUNNER ${pair}`,
       at: Date.now(),
     });
     io.to(party.id).emit('chat:message', message);
     broadcast(party);
-    sendRunnerPositions(party);
+
+    // Drop the caught pair from any markers currently on the hunters' maps.
+    if (Array.isArray(party.revealed) && party.revealed.length) {
+      party.revealed = party.revealed.filter((pin) => pin.pair !== pair);
+      sendReveal(party);
+    }
+
+    if (!activePairs(party).size) endGame(party, 'hunters');
+    else sendPairDistances(party);
     cb({ ok: true });
   });
 
-  // Players share their position; runners' positions are relayed to hunters.
+  // Players share their position. Hunters receive distances only; exact runner
+  // coordinates are never relayed until a scheduled reveal.
   socket.on('player:position', (payload = {}, done) => {
     const cb = ack(done);
     const party = getPartyForSocket(socket);
     if (!party) return cb({ ok: false, error: 'Not in a party.' });
     const player = party.players.get(socket.data.playerId);
     if (!player) return cb({ ok: false, error: 'Player not found.' });
+    // Eliminated players are no longer tracked, and nothing is relayed once
+    // the game has ended.
+    if (player.caught || party.status !== 'active') return cb({ ok: true });
 
     const point = toLatLng(payload.position || payload);
     if (!point) return cb({ ok: false, error: 'Invalid position.' });
@@ -605,7 +790,7 @@ io.on('connection', (socket) => {
       heading: Number.isFinite(heading) ? ((heading % 360) + 360) % 360 : null,
       at: Date.now(),
     };
-    sendRunnerPositions(party);
+    sendPairDistances(party);
     cb({ ok: true });
   });
 
@@ -629,6 +814,7 @@ function removePlayer(party, playerId) {
   if (!party.players.has(playerId)) return;
   party.players.delete(playerId);
   if (party.players.size === 0) {
+    clearPartyTimers(party);
     parties.delete(party.id);
     return;
   }
@@ -638,15 +824,45 @@ function removePlayer(party, playerId) {
   }
   recomputePairs(party);
   broadcast(party);
+
+  // Losing the last runner ends the game in the hunters' favour.
+  if (party.status === 'active') {
+    if (!activePairs(party).size) endGame(party, 'hunters');
+    else sendPairDistances(party);
+  }
 }
 
 // Periodically drop empty parties.
 setInterval(() => {
   for (const [id, party] of parties) {
-    if (party.players.size === 0) parties.delete(id);
+    if (party.players.size === 0) {
+      clearPartyTimers(party);
+      parties.delete(id);
+    }
   }
 }, 60 * 1000).unref?.();
 
-server.listen(PORT, () => {
-  console.log(`Manhunt server running on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Manhunt server running on http://localhost:${PORT}`);
+  });
+}
+
+// Exported for tests. The HTTP listener only starts when run directly.
+module.exports = {
+  app,
+  server,
+  io,
+  parties,
+  sanitize,
+  normalizeSettings,
+  activePairs,
+  pairDistance,
+  eliminatePair,
+  beginGame,
+  revealPositions,
+  endGame,
+  scheduleParty,
+  clearPartyTimers,
+  REVEAL_INTERVAL_MS,
+};

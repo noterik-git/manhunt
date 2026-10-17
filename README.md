@@ -37,11 +37,21 @@ and are lost when the server restarts (acceptable for this first version).
   the game starts)
 - Live location: your own dot and a heading cone that rotates with the phone
   compass, plus a **Locate** button
-- Hunters see every runner's live position on the map, labelled with the distance
-  and a direction arrow that turns with the hunter's heading
+- **Hunter runner panel**: a collapsible list of the active runner pairs, shown
+  anonymously as `RUNNER 1 — 50 m`, sorted closest first and refreshed live.
+  Hunters only ever see distances, **never** runners' live coordinates.
+- **Periodic reveals**: every 10 minutes the server hands hunters the exact
+  location of each active runner pair as a red pin. The pins are replaced at the
+  next reveal.
 - Hunter chat and game log (hunters post, everyone reads)
-- Proximity catch: a hunter within reach gets a **Catch** button; the runner is
-  eliminated and sees a "return to base" notice
+- Proximity catch: a hunter within reach gets a **Catch** button; catching a pair
+  eliminates both of its runners, stops their tracking and shows them
+  **RETURN TO BASE**
+- **Head start and game timers**: a `HEAD START — 15:00` countdown, then the main
+  `TIME LEFT — 02:00:00` hunt timer. Both run on server-authoritative time.
+- **Win / lose panels**: a green **RUNNERS WIN** panel if any pair survives to
+  full time, or **HUNTERS WIN** if every pair is caught first. Timers and
+  location updates stop when the game ends.
 - Big red **out-of-area** banner (caps) whenever your live location leaves the
   play area
 - Templates can define the play area as a street/river boundary (polygon) instead
@@ -108,11 +118,17 @@ Manhunt/
   are labelled. Kept in `data/templates.json` so it can be refined.
 - **Mission locations are not invented** and remain host-configurable.
 - **Live GPS tracking.** Each player broadcasts their position every few seconds.
-  Hunters see the live position of every runner on the map, each labelled with the
-  distance and a direction arrow that rotates as the hunter turns their phone.
-  Your own dot is drawn with a heading cone. Hunter chat is posted by hunters and
-  read by everyone; a runner is eliminated when a hunter within reach presses
-  **Catch**, which is logged to the chat.
+  A hunter's client receives **distances only** (the runner panel), never live
+  coordinates — exact runner locations reach hunters only through the scheduled
+  reveal. Your own dot is drawn with a heading cone. Hunter chat is posted by
+  hunters and read by everyone. When a hunter within reach presses **Catch**, the
+  target pair is eliminated (both runners stop being tracked) and the catch is
+  logged to the chat.
+- **Timers and endings are server-authoritative.** The server sets the head-start
+  and full-time timestamps and decides the winner; clients only render them. The
+  main game timer does not run during the head start. Reveals fire every
+  **10 minutes** (changeable with the optional `MANHUNT_REVEAL_MS` environment
+  variable, used mainly by the tests).
 
 ## Not included (by design)
 

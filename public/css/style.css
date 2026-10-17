@@ -968,9 +968,94 @@ select.input {
 .chat__send:disabled { opacity: 0.45; }
 .chat__send:active { transform: scale(0.96); }
 
-/* ================= RUNNER MARKERS: DISTANCE + ARROW ================ */
-.runner-pin-wrap { background: none; border: 0; }
-.runner-pin {
+/* =================== HUNTER RUNNER PANEL ========================== */
+.panel {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(70px + env(safe-area-inset-bottom));
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  max-height: min(52dvh, 420px);
+  overflow: hidden;
+  background: rgba(11, 12, 14, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.panel[hidden] { display: none; }
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.panel__heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.panel__title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.panel__hint { font-size: 11px; color: var(--muted); }
+.panel__close {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.panel__close:active { transform: scale(0.94); }
+
+.pair-list {
+  margin: 0;
+  padding: 8px 10px 12px;
+  list-style: none;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pair-list__empty { color: var(--muted-2); font-size: 12px; text-align: center; padding: 12px 0; }
+.pair-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 14px;
+}
+.pair-row--close {
+  border-color: rgba(229, 72, 77, 0.55);
+  background: var(--red-dim);
+}
+.pair-row__name { font-weight: 700; letter-spacing: 0.02em; }
+.pair-row__sep { color: var(--muted-2); }
+.pair-row__dist {
+  margin-left: auto;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ===================== REVEALED LOCATION PINS ===================== */
+.reveal-pin-wrap { background: none; border: 0; }
+.reveal-pin {
   position: absolute;
   left: 0;
   top: 0;
@@ -978,40 +1063,28 @@ select.input {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   pointer-events: none;
   white-space: nowrap;
 }
-.runner-pin__arrow {
-  width: 0;
-  height: 0;
-  border-left: 7px solid transparent;
-  border-right: 7px solid transparent;
-  border-bottom: 12px solid var(--red-bright);
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
-  transition: transform 0.15s linear;
-}
-.runner-pin__body {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  background: rgba(11, 12, 14, 0.92);
-  border: 1px solid rgba(229, 72, 77, 0.55);
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text);
-  box-shadow: var(--shadow-sm);
-}
-.runner-pin__dot {
-  width: 8px;
-  height: 8px;
+.reveal-pin__dot {
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--red-bright);
-  box-shadow: 0 0 0 3px rgba(229, 72, 77, 0.25);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 4px rgba(229, 72, 77, 0.28), 0 2px 6px rgba(0, 0, 0, 0.5);
 }
-.runner-pin__dist { font-variant-numeric: tabular-nums; }
+.reveal-pin__label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: rgba(11, 12, 14, 0.9);
+  border: 1px solid rgba(229, 72, 77, 0.55);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
 
 /* ==================== PROXIMITY CATCH BUTTON ====================== */
 .catch-action {
@@ -1111,6 +1184,76 @@ select.input {
   -webkit-tap-highlight-color: transparent;
 }
 .eliminated__btn:active { transform: scale(0.97); }
+
+/* ========================= FINAL RESULT =========================== */
+.result {
+  position: absolute;
+  inset: 0;
+  z-index: 720;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 9, 11, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.result[hidden] { display: none; }
+.result__card {
+  width: 100%;
+  max-width: 360px;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  padding: 30px 24px;
+  box-shadow: var(--shadow);
+  animation: fadeUp 0.4s var(--ease);
+}
+.result__card--win {
+  border-color: rgba(47, 191, 113, 0.6);
+  background: linear-gradient(180deg, rgba(47, 191, 113, 0.16), var(--surface) 62%);
+}
+.result__card--lose {
+  border-color: rgba(229, 72, 77, 0.5);
+  background: linear-gradient(180deg, rgba(229, 72, 77, 0.12), var(--surface) 62%);
+}
+.result__tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.result__card--win .result__tag { color: var(--green); }
+.result__card--lose .result__tag { color: var(--red-bright); }
+.result__title {
+  margin: 0 0 10px;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.result__card--win .result__title { color: var(--green); }
+.result__card--lose .result__title { color: var(--red-bright); }
+.result__text { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.result__btn {
+  margin-top: 18px;
+  width: 100%;
+  min-height: 48px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.result__card--win .result__btn { background: var(--green); color: #06210f; }
+.result__card--lose .result__btn { background: var(--red); color: #fff; }
+.result__btn:active { transform: scale(0.97); }
 
 /* ======================= OUT OF AREA WARNING ====================== */
 .area-warning {

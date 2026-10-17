@@ -38,13 +38,19 @@ const state = {
   userCentered: false,
   orientationBound: false,
   hasAbsoluteHeading: false,
-  // shared player positions (hunters see runners)
-  runnerPositions: {},
-  runnerMarkers: {},
-  positionTimer: null,
-  catchTargetId: null,
-  selfCaught: false,
   lastArrowUpdate: 0,
+  // hunter view: distances only, never coordinates
+  pairDistances: {},
+  pairOpen: false,
+  reveal: null,          // { at, nextAt, pins: [{ pair, lat, lng }] }
+  revealMarkers: [],
+  positionTimer: null,
+  catchPair: null,
+  selfCaught: false,
+  // server-authoritative clock + end state
+  clockOffset: 0,
+  gameEnded: false,
+  resultShown: false,
 };
 
 const MOVEMENT_LABELS = {
@@ -60,9 +66,6 @@ const DEFAULT_CENTER = [47.4979, 19.0402]; // Budapest city centre (host adjusts
 const USER_CONE_RADIUS_M = 70;
 const USER_CONE_SPREAD_DEG = 55;
 const USER_LOCATION_COLOR = '#22d3ee';
-
-// How close a hunter must be (using last reported positions) to catch.
-const CATCH_RADIUS_M = 15;
 
 /* ================================================================== */
 /* Small helpers                                                      */
@@ -154,9 +157,8 @@ socket.on('connect', () => {
   if (session && session.partyId) {
     socket.emit('party:reconnect', { partyId: session.partyId, playerId: state.playerId }, (res) => {
       if (res && res.ok) {
-        state.party = res.state;
         state.partyId = res.id;
-        renderParty();
+        applyParty(res.state);
       } else {
         setSession(null);
       }
@@ -164,11 +166,16 @@ socket.on('connect', () => {
   }
 });
 
-socket.on('party:update', (party) => {
+/** Store party state and keep the clock aligned to the server. */
+function applyParty(party) {
+  if (!party) return;
+  if (Number.isFinite(party.serverTime)) state.clockOffset = party.serverTime - Date.now();
   state.party = party;
   state.partyId = party.id;
   renderParty();
-});
+}
+
+socket.on('party:update', (party) => applyParty(party));
 
 socket.on('party:started', () => {
   toast('The game has started');
@@ -185,16 +192,29 @@ socket.on('chat:message', (msg) => {
   }
 });
 
-// Runner positions, relayed to hunters only.
-socket.on('player:positions', (payload) => {
-  if (!payload || !Array.isArray(payload.positions)) return;
+// Distances only — the server never hands hunters live runner coordinates.
+socket.on('runner:distances', (payload) => {
+  if (!payload || !Array.isArray(payload.pairs)) return;
   const next = {};
-  payload.positions.forEach((pos) => {
-    if (pos && pos.id) next[pos.id] = pos;
+  payload.pairs.forEach((p) => {
+    if (p && p.pair != null) next[p.pair] = p;
   });
-  state.runnerPositions = next;
-  renderRunnerMarkers();
+  state.pairDistances = next;
+  renderPairPanel();
   updateCatchButton();
+});
+
+// Scheduled reveal: exact coordinates, kept until the next reveal replaces them.
+socket.on('party:reveal', (payload) => {
+  state.reveal = payload && Array.isArray(payload.pins) ? payload : { pins: [] };
+  renderRevealMarkers();
+});
+
+socket.on('party:ended', (payload) => {
+  if (state.gameEnded) return;
+  toast(payload && payload.winner === 'runners'
+    ? 'Full time — the runners survived'
+    : 'All runner pairs caught — hunters win');
 });
 
 socket.on('party:kicked', () => {
@@ -203,10 +223,11 @@ socket.on('party:kicked', () => {
   state.gameFitted = false;
   clearInterval(state.timerHandle);
   resetChat();
+  resetHunterView();
+  resetResult();
   stopLocationTracking();
   stopPositionBroadcast();
   clearUserLayer();
-  clearRunnerMarkers();
   setSession(null);
   closeRules();
   showView('dashboard');
@@ -570,7 +591,7 @@ function isHost() {
 function renderParty() {
   const party = state.party;
   if (!party) return;
-  if (party.status === 'active') {
+  if (party.status === 'active' || party.status === 'ended') {
     showView('game');
     renderGame(party);
   } else {
@@ -701,7 +722,9 @@ function renderGame(party) {
   $('roleName').textContent = roleLabel(role).toUpperCase();
   let detail = '';
   if (role === 'hunter') {
-    detail = party.settings.catchMethod === 'touch' ? 'Catch pairs by touch.' : 'Catch pairs by tagging.';
+    detail = party.settings.catchMethod === 'touch'
+      ? 'Track pairs by distance. Catch by touch.'
+      : 'Track pairs by distance. Catch by tag.';
   } else if (role === 'runner') {
     detail = me && me.pair ? 'Runner pair ' + me.pair : 'Escape and survive.';
   } else {
@@ -713,54 +736,84 @@ function renderGame(party) {
   ensureGameMap(party);
   startGameTimer(party);
   renderChat(party);
-  startLocationTracking();
-  startPositionBroadcast();
+  renderPairPanel();
+  renderRevealMarkers();
+  syncTracking(party, me);
+  renderResult(party, me);
   renderElimination(me);
-  renderRunnerMarkers();
   updateCatchButton();
   updateAreaWarning();
+}
+
+/**
+ * Keep live location reporting in step with the game state: only active,
+ * non-eliminated players broadcast, and everything stops once the game ends.
+ */
+function syncTracking(party, me) {
+  const live = party.status === 'active' && !(me && me.caught);
+  if (live) {
+    startLocationTracking();
+    startPositionBroadcast();
+  } else {
+    stopPositionBroadcast();
+    stopLocationTracking();
+  }
+}
+
+/** Server clock in ms, correcting for the device's own clock drift. */
+function serverNow() {
+  return Date.now() + state.clockOffset;
 }
 
 function startGameTimer(party) {
   clearInterval(state.timerHandle);
   const tick = () => {
-    if (!state.party || state.party.status !== 'active') return;
-    const startedAt = party.startedAt || Date.now();
-    const escapeMs = party.settings.escapeMin * 60 * 1000;
-    const endMs = startedAt + party.settings.durationMin * 60 * 1000;
-    const now = Date.now();
-    const escapeEnds = startedAt + escapeMs;
+    const current = state.party;
+    if (!current) return;
 
-    let phase, target, sub;
-    if (now < escapeEnds) {
-      phase = 'Escape';
-      target = escapeEnds;
-      sub = 'Head start for the runners.';
-    } else if (now < endMs) {
-      phase = 'Hunt';
-      target = endMs;
-      sub = 'The hunt is on.';
+    // When the game has ended the timer is frozen at the final state.
+    if (current.status === 'ended') {
+      const winner = current.winner;
+      $('phaseLabel').textContent = 'Full time';
+      $('timer').textContent = winner === 'runners' ? 'RUNNERS WIN' : 'HUNTERS WIN';
+      $('phaseSub').textContent = current.settings.escapeMin + ' min head start · '
+        + current.settings.durationMin + ' min hunt.';
+      clearInterval(state.timerHandle);
+      state.timerHandle = null;
+      return;
+    }
+    if (current.status !== 'active') return;
+
+    const now = serverNow();
+    const huntStart = current.huntStartsAt || (current.startedAt || now);
+    const huntEnd = current.huntEndsAt || huntStart;
+
+    let phase, target;
+    if (now < huntStart) {
+      phase = 'Head start';
+      target = huntStart;
     } else {
-      phase = 'Time is up';
-      target = now;
-      sub = 'The game has ended.';
+      phase = 'Time left';
+      target = huntEnd;
     }
     $('phaseLabel').textContent = phase;
     $('timer').textContent = formatClock(Math.max(0, target - now));
-    $('phaseSub').textContent = sub;
+    $('phaseSub').textContent = current.settings.escapeMin + ' min head start · '
+      + current.settings.durationMin + ' min hunt.';
   };
   tick();
   state.timerHandle = setInterval(tick, 1000);
 }
 
 function formatClock(ms) {
-  const total = Math.floor(ms / 1000);
+  const total = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
   const mm = String(m).padStart(2, '0');
   const ss = String(s).padStart(2, '0');
-  return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+  if (h > 0) return `${String(h).padStart(2, '0')}:${mm}:${ss}`;
+  return `${m}:${ss}`;
 }
 
 function ensureGameMap(party) {
@@ -837,10 +890,11 @@ function leaveParty() {
     state.gameFitted = false;
     clearInterval(state.timerHandle);
     resetChat();
+    resetHunterView();
+    resetResult();
     stopLocationTracking();
     stopPositionBroadcast();
     clearUserLayer();
-    clearRunnerMarkers();
     setSession(null);
     showView('dashboard');
   });
@@ -929,6 +983,7 @@ function renderChatBadge() {
 }
 
 function openChat() {
+  closePairs();
   state.chatOpen = true;
   state.chatUnread = 0;
   $('chat-panel').hidden = false;
@@ -966,10 +1021,11 @@ function sendChat(event) {
   });
 }
 
+/** A hunter catches the nearest catchable runner pair. */
 function doCatch() {
-  if (!amHunter() || !state.catchTargetId) return;
-  const targetId = state.catchTargetId;
-  socket.emit('player:catch', { targetId }, (res) => {
+  if (!amHunter() || state.catchPair == null) return;
+  const pair = state.catchPair;
+  socket.emit('player:catch', { pair }, (res) => {
     if (res && !res.ok) toast(res.error || 'Could not catch them');
   });
 }
@@ -1213,17 +1269,6 @@ function distanceM(a, b) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-/** Compass bearing (degrees from north) from point a to point b. */
-function bearingDeg(a, b) {
-  const lat1 = (a.lat * Math.PI) / 180;
-  const lat2 = (b.lat * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-  const y = Math.sin(dLng) * Math.cos(lat2);
-  const x = Math.cos(lat1) * Math.sin(lat2)
-    - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
-}
-
 /** Tidy distance label, rounded to hide GPS jitter. */
 function formatDistance(m) {
   if (m == null) return '? m';
@@ -1232,124 +1277,146 @@ function formatDistance(m) {
   return '~' + (Math.round(m / 5) * 5) + ' m';
 }
 
-function renderRunnerMarkers() {
+/* ================================================================== */
+/* Hunter runner panel (distances only — never coordinates)           */
+/* ================================================================== */
+
+/** Tracked pairs, sorted closest first. */
+function sortedPairs() {
+  return Object.keys(state.pairDistances)
+    .map((k) => state.pairDistances[k])
+    .filter((p) => p && p.pair != null)
+    .sort((a, b) => a.distance - b.distance);
+}
+
+function renderPairPanel() {
+  const btn = $('pairBtn');
+  const panel = $('pair-panel');
+  const list = $('pair-list');
+  if (!btn || !panel || !list) return;
+
+  const hunter = amHunter() && state.party && state.party.status === 'active';
+  btn.hidden = !hunter;
+  if (!hunter) {
+    panel.hidden = true;
+    state.pairOpen = false;
+    return;
+  }
+
+  const pairs = sortedPairs();
+  if (!pairs.length) {
+    list.innerHTML = '<li class="pair-list__empty">No runner pairs tracked yet.</li>';
+    return;
+  }
+  list.innerHTML = pairs.map((p) => {
+    const cls = p.canCatch ? 'pair-row pair-row--close' : 'pair-row';
+    return '<li class="' + cls + '">'
+      + '<span class="pair-row__name">RUNNER ' + escapeHtml(String(p.pair)) + '</span>'
+      + '<span class="pair-row__sep">&mdash;</span>'
+      + '<span class="pair-row__dist">' + escapeHtml(formatDistance(p.distance)) + '</span></li>';
+  }).join('');
+}
+
+function openPairs() {
+  if (!amHunter()) return;
+  closeChat();
+  state.pairOpen = true;
+  $('pair-panel').hidden = false;
+  $('pairBtn').setAttribute('aria-expanded', 'true');
+  renderPairPanel();
+  updateCatchButton();
+}
+
+function closePairs() {
+  state.pairOpen = false;
+  const panel = $('pair-panel');
+  if (panel) panel.hidden = true;
+  const btn = $('pairBtn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  updateCatchButton();
+}
+
+function togglePairs() {
+  if (state.pairOpen) closePairs();
+  else openPairs();
+}
+
+/* ================================================================== */
+/* Revealed locations (hunters only, replaced each interval)           */
+/* ================================================================== */
+
+function renderRevealMarkers() {
   const map = state.gameMap;
   if (!map) return;
+  clearRevealMarkers();
 
-  const active = Object.keys(state.runnerPositions);
+  const pins = state.reveal && Array.isArray(state.reveal.pins) ? state.reveal.pins : [];
+  if (!amHunter() || !pins.length) return;
 
-  // Drop markers for runners that vanished or were caught.
-  Object.keys(state.runnerMarkers).forEach((id) => {
-    const pos = state.runnerPositions[id];
-    if (!pos || pos.caught) {
-      map.removeLayer(state.runnerMarkers[id].marker);
-      delete state.runnerMarkers[id];
-    }
-  });
-
-  active.forEach((id) => {
-    const pos = state.runnerPositions[id];
-    if (!pos || pos.caught) return;
-    if (!state.runnerMarkers[id]) {
-      const icon = L.divIcon({
-        className: 'runner-pin-wrap',
-        html: '<div class="runner-pin">'
-          + '<div class="runner-pin__arrow"></div>'
-          + '<div class="runner-pin__body">'
-          + '<span class="runner-pin__dot"></span>'
-          + '<span class="runner-pin__name"></span>'
-          + '<span class="runner-pin__dist"></span>'
-          + '</div></div>',
-        iconSize: [0, 0],
-        iconAnchor: [0, 0],
-      });
-      const marker = L.marker([pos.lat, pos.lng], { icon, interactive: false, zIndexOffset: 500 })
-        .addTo(map);
-      const el = marker.getElement();
-      state.runnerMarkers[id] = {
-        marker,
-        arrow: el ? el.querySelector('.runner-pin__arrow') : null,
-        name: el ? el.querySelector('.runner-pin__name') : null,
-        dist: el ? el.querySelector('.runner-pin__dist') : null,
-      };
-    }
-    state.runnerMarkers[id].marker.setLatLng([pos.lat, pos.lng]);
-  });
-
-  updateRunnerArrows();
-}
-
-function updateRunnerArrows() {
-  const me = state.userLatLng;
-  const heading = currentHeading();
-  Object.keys(state.runnerMarkers).forEach((id) => {
-    const pos = state.runnerPositions[id];
-    const view = state.runnerMarkers[id];
-    if (!pos || !view) return;
-
-    const player = playerById(id);
-    if (view.name) view.name.textContent = (player ? player.name : 'Runner') + ' ';
-
-    if (me) {
-      const dist = distanceM(me, { lat: pos.lat, lng: pos.lng });
-      if (view.dist) view.dist.textContent = formatDistance(dist);
-      const rel = bearingDeg(me, { lat: pos.lat, lng: pos.lng }) - heading;
-      if (view.arrow) {
-        view.arrow.style.transform = 'rotate(' + Math.round(rel) + 'deg)';
-        view.arrow.style.display = '';
-      }
-    } else if (view.dist) {
-      view.dist.textContent = '? m';
-    }
-  });
-}
-
-function clearRunnerMarkers() {
-  const map = state.gameMap;
-  if (map) {
-    Object.keys(state.runnerMarkers).forEach((id) => {
-      map.removeLayer(state.runnerMarkers[id].marker);
+  pins.forEach((pin) => {
+    if (!pin || !Number.isFinite(pin.lat) || !Number.isFinite(pin.lng)) return;
+    const icon = L.divIcon({
+      className: 'reveal-pin-wrap',
+      html: '<div class="reveal-pin"><span class="reveal-pin__dot"></span>'
+        + '<span class="reveal-pin__label">RUNNER ' + escapeHtml(String(pin.pair)) + '</span></div>',
+      iconSize: [0, 0],
+      iconAnchor: [0, 0],
     });
-  }
-  state.runnerMarkers = {};
-  state.runnerPositions = {};
-  state.catchTargetId = null;
+    const marker = L.marker([pin.lat, pin.lng], { icon, interactive: false, zIndexOffset: 400 })
+      .addTo(map);
+    state.revealMarkers.push(marker);
+  });
+}
+
+function clearRevealMarkers() {
+  const map = state.gameMap;
+  if (map) state.revealMarkers.forEach((m) => map.removeLayer(m));
+  state.revealMarkers = [];
+}
+
+/** Clears everything the hunter view accumulates between games. */
+function resetHunterView() {
+  clearRevealMarkers();
+  state.pairDistances = {};
+  state.reveal = null;
+  state.catchPair = null;
+  state.pairOpen = false;
+  const panel = $('pair-panel');
+  if (panel) panel.hidden = true;
   const btn = $('catchRunnerBtn');
   if (btn) btn.hidden = true;
 }
 
-function playerById(id) {
-  if (!state.party || !state.party.players) return null;
-  return state.party.players.find((p) => p.id === id) || null;
-}
+/* ================================================================== */
+/* Catching                                                           */
+/* ================================================================== */
 
-/** Show the Catch button when a live runner is within reach. */
+/** Show the Catch button when the server reports a pair within reach. */
 function updateCatchButton() {
   const btn = $('catchRunnerBtn');
   if (!btn) return;
 
+  const party = state.party;
   let best = null;
-  if (amHunter() && state.userLatLng) {
-    Object.keys(state.runnerPositions).forEach((id) => {
-      const pos = state.runnerPositions[id];
-      if (!pos || pos.caught) return;
-      const dist = distanceM(state.userLatLng, { lat: pos.lat, lng: pos.lng });
-      if (dist != null && dist <= CATCH_RADIUS_M && (!best || dist < best.dist)) {
-        best = { id, dist };
-      }
+  if (amHunter() && party && party.status === 'active' && !state.gameEnded) {
+    sortedPairs().forEach((p) => {
+      if (p.canCatch && (!best || p.distance < best.distance)) best = p;
     });
   }
 
-  if (best && !state.chatOpen) {
-    state.catchTargetId = best.id;
-    const player = playerById(best.id);
-    btn.textContent = 'Catch ' + (player ? player.name : 'runner');
+  if (best && !state.chatOpen && !state.pairOpen) {
+    state.catchPair = best.pair;
+    btn.textContent = 'Catch RUNNER ' + best.pair;
     btn.hidden = false;
   } else {
-    state.catchTargetId = null;
+    state.catchPair = null;
     btn.hidden = true;
   }
 }
+
+/* ================================================================== */
+/* Elimination and final result                                       */
+/* ================================================================== */
 
 function renderElimination(me) {
   const caught = Boolean(me && me.caught);
@@ -1357,7 +1424,7 @@ function renderElimination(me) {
   const banner = $('elimBanner');
   if (!overlay || !banner) return;
 
-  banner.hidden = !caught;
+  banner.hidden = !caught || state.gameEnded;
   if (!caught) {
     overlay.hidden = true;
     state.selfCaught = false;
@@ -1368,9 +1435,8 @@ function renderElimination(me) {
   $('eliminatedBy').textContent = me.caughtBy
     ? 'Caught by ' + me.caughtBy + '.'
     : 'You were caught.';
-  overlay.hidden = false;
+  overlay.hidden = state.gameEnded;
   updateCatchButton();
-  renderRunnerMarkers();
 }
 
 function dismissEliminated() {
@@ -1380,6 +1446,49 @@ function dismissEliminated() {
     state.followUser = false;
     state.gameMap.setView([base.lat, base.lng], 16);
   }
+}
+
+function renderResult(party, me) {
+  const ended = party.status === 'ended' && Boolean(party.winner);
+  if (!ended) {
+    if (state.resultShown || state.gameEnded) resetResult();
+    return;
+  }
+  if (state.resultShown) return;
+
+  const winner = party.winner;
+  const role = me ? me.role : null;
+  const won = (winner === 'hunters' && role === 'hunter')
+    || (winner === 'runners' && role === 'runner');
+
+  // The game is over: freeze the timer and stop location updates.
+  clearInterval(state.timerHandle);
+  state.timerHandle = null;
+  stopPositionBroadcast();
+  stopLocationTracking();
+  clearAreaWarning();
+  state.gameEnded = true;
+
+  $('resultCard').className = 'result__card ' + (won ? 'result__card--win' : 'result__card--lose');
+  $('resultTag').textContent = won ? 'Victory' : 'Defeat';
+  $('resultTitle').textContent = winner === 'runners' ? 'RUNNERS WIN' : 'HUNTERS WIN';
+  $('resultText').textContent = winner === 'runners'
+    ? (won ? 'You survived until full time.' : 'The runners survived until full time.')
+    : 'Every runner pair was caught.';
+
+  state.resultShown = true;
+  $('result').hidden = false;
+}
+
+function dismissResult() {
+  $('result').hidden = true;
+}
+
+function resetResult() {
+  state.gameEnded = false;
+  state.resultShown = false;
+  const el = $('result');
+  if (el) el.hidden = true;
 }
 
 /* ================================================================== */
@@ -1437,13 +1546,16 @@ function wire() {
   });
   $('leaveBtn').addEventListener('click', leaveParty);
 
-  // In-game HUD: chat, live location and catching.
+  // In-game HUD: chat, runner panel, live location and catching.
   $('chatBtn').addEventListener('click', toggleChat);
   $('chatClose').addEventListener('click', closeChat);
   $('chat-form').addEventListener('submit', sendChat);
+  $('pairBtn').addEventListener('click', togglePairs);
+  $('pairClose').addEventListener('click', closePairs);
   $('locateMeBtn').addEventListener('click', locateMe);
   $('catchRunnerBtn').addEventListener('click', doCatch);
   $('eliminatedClose').addEventListener('click', dismissEliminated);
+  $('resultClose').addEventListener('click', dismissResult);
 }
 
 /* ================================================================== */

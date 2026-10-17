@@ -261,10 +261,22 @@
       <div class="hud hud--bl">
         <button id="rulesBtn" class="hud-btn" type="button">Rules</button>
         <button id="locateMeBtn" class="hud-btn" type="button">Locate</button>
+        <button id="pairBtn" class="hud-btn" type="button" aria-expanded="false" hidden>Runners</button>
         <button id="chatBtn" class="hud-btn" type="button" aria-expanded="false">
           Chat<span id="chatUnread" class="hud-badge" hidden>0</span>
         </button>
       </div>
+
+      <section id="pair-panel" class="panel panel--pairs" hidden aria-label="Runner pairs">
+        <header class="panel__head">
+          <div class="panel__heading">
+            <span class="panel__title">Runner pairs</span>
+            <span class="panel__hint">Distance only &mdash; coordinates stay hidden.</span>
+          </div>
+          <button id="pairClose" class="panel__close" type="button" aria-label="Close runner panel">&#10005;</button>
+        </header>
+        <ul id="pair-list" class="pair-list"></ul>
+      </section>
 
       <section id="chat-panel" class="chat" hidden aria-label="Hunter chat">
         <header class="chat__head">
@@ -286,17 +298,26 @@
         You are out of the area &mdash; return immediately
       </div>
 
-      <div id="elimBanner" class="elim-banner" hidden>Eliminated &mdash; return to the base</div>
+      <div id="elimBanner" class="elim-banner" hidden>RETURN TO BASE</div>
 
       <button id="catchRunnerBtn" class="catch-action" type="button" hidden>Catch</button>
 
       <div id="eliminated" class="eliminated" hidden>
         <div class="eliminated__card" role="alertdialog" aria-label="Eliminated">
           <span class="eliminated__tag">Eliminated</span>
-          <h2 class="eliminated__title">You&rsquo;ve been caught</h2>
+          <h2 class="eliminated__title">RETURN TO BASE</h2>
           <p id="eliminatedBy" class="eliminated__text"></p>
-          <p class="eliminated__text">Head back to the base.</p>
+          <p class="eliminated__text">Your pair is out. Head back to the base and sit tight.</p>
           <button id="eliminatedClose" class="eliminated__btn" type="button">Continue</button>
+        </div>
+      </div>
+
+      <div id="result" class="result" hidden>
+        <div id="resultCard" class="result__card">
+          <span id="resultTag" class="result__tag">Victory</span>
+          <h2 id="resultTitle" class="result__title">RUNNERS WIN</h2>
+          <p id="resultText" class="result__text"></p>
+          <button id="resultClose" class="result__btn" type="button">Close</button>
         </div>
       </div>
     </section>
