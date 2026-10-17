@@ -35,6 +35,15 @@ and are lost when the server restarts (acceptable for this first version).
 - In-game full-screen map with pinch/zoom, a compact top-right timer, a role HUD,
   boundary streets with labels, and permitted-route lines (no leave button once
   the game starts)
+- Live location: your own dot and a heading cone that rotates with the phone
+  compass, plus a **Locate** button
+- Hunters see every runner's live position on the map, labelled with the distance
+  and a direction arrow that turns with the hunter's heading
+- Hunter chat and game log (hunters post, everyone reads)
+- Proximity catch: a hunter within reach gets a **Catch** button; the runner is
+  eliminated and sees a "return to base" notice
+- Big red **out-of-area** banner (caps) whenever your live location leaves the
+  play area
 - Templates can define the play area as a street/river boundary (polygon) instead
   of a simple radius circle
 
@@ -76,7 +85,7 @@ Manhunt/
 │   └── templates.json   # Saved game templates
 ├── public/
 │   ├── index.html       # All views (loading, dashboard, create, join, lobby, game)
-│   ├── css/style.css    # Dark, mobile-first tactical UI
+│   ├── css/style.css    # Dark, mobile-first responsive UI
 │   └── js/app.js        # Client logic, navigation, socket handling
 └── package.json
 ```
@@ -85,9 +94,11 @@ Manhunt/
 
 - **Gameplay boundaries.** A custom game draws a simple radius circle around the
   base the host sets on the map. A template can instead define a real boundary:
-  filled polygons for each area, labelled **barrier streets/edges**, and
+  filled **blue** polygons for each area, labelled **barrier streets/edges**, and
   **permitted route** lines (bridges/transit). These render on both the create
-  map (as a preview) and the full-screen in-game map.
+  map (as a preview) and the full-screen in-game map. When a player's live
+  position falls outside the playable area, a red **"out of area — return
+  immediately"** banner appears at the top of their screen until they return.
 - **Ádi Manhunt area.** The template highlights a hard closed loop: the whole of
   **Margitsziget** (island outline from OpenStreetMap) plus **Újlipótváros**,
   plus **Margit híd** up to the island entrance. The loop is bounded by
