@@ -260,6 +260,34 @@ function toLL(v) {
   return [Number(v.lat), Number(v.lng)];
 }
 
+/** Ray-casting point-in-polygon test for a single ring of [lat, lng] points. */
+function pointInRing(lat, lng, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][0];
+    const xi = ring[i][1];
+    const yj = ring[j][0];
+    const xj = ring[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Playable-area check. Returns true when the point falls inside any boundary
+ * area; a boundary with no areas (or no boundary at all) plays everywhere.
+ * Shares the same geometry that drawBoundaryGroup renders.
+ */
+function isPlayablePoint(lat, lng, boundary = state.boundary) {
+  if (!boundary || !Array.isArray(boundary.areas) || !boundary.areas.length) return true;
+  return boundary.areas.some((area) => {
+    const ring = (area.vertices || []).map(toLL);
+    return ring.length >= 3 && pointInRing(lat, lng, ring);
+  });
+}
+
 /** Draws boundary polygons, labelled barrier streets and permitted routes. */
 function drawBoundaryGroup(group, boundary, opts = {}) {
   group.clearLayers();
@@ -331,6 +359,12 @@ function refreshCreateBoundary(fit) {
 }
 
 function setBase(lat, lng, source) {
+  // When a template boundary is active the base must sit inside the playable
+  // area, so the check and the drawn overlay share the same geometry.
+  if (state.boundary && !isPlayablePoint(lat, lng, state.boundary)) {
+    toast('That point is outside the playable area');
+    return;
+  }
   state.base = { lat, lng };
   $('baseCoords').textContent = lat.toFixed(5) + ', ' + lng.toFixed(5);
   if (state.createMap) {
