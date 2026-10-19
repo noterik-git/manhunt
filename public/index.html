@@ -262,6 +262,8 @@
         <button id="rulesBtn" class="hud-btn" type="button">Rules</button>
         <button id="locateMeBtn" class="hud-btn" type="button">Locate</button>
         <button id="pairBtn" class="hud-btn" type="button" aria-expanded="false" hidden>Runners</button>
+        <button id="pointsBtn" class="hud-btn" type="button" aria-expanded="false" hidden>Points</button>
+        <button id="boardBtn" class="hud-btn" type="button" aria-expanded="false">Ranks</button>
         <button id="chatBtn" class="hud-btn" type="button" aria-expanded="false">
           Chat<span id="chatUnread" class="hud-badge" hidden>0</span>
         </button>
@@ -276,6 +278,40 @@
           <button id="pairClose" class="panel__close" type="button" aria-label="Close runner panel">&#10005;</button>
         </header>
         <ul id="pair-list" class="pair-list"></ul>
+      </section>
+
+      <section id="points-panel" class="panel panel--points" hidden aria-label="Mission code">
+        <header class="panel__head">
+          <div class="panel__heading">
+            <span class="panel__title">Mission code</span>
+            <span class="panel__hint">One claim per pair. Points are saved server-side.</span>
+          </div>
+          <button id="pointsClose" class="panel__close" type="button" aria-label="Close mission panel">&#10005;</button>
+        </header>
+        <form id="points-form" class="code-form" autocomplete="off">
+          <div class="code-form__score">
+            <span class="code-form__label">Your pair</span>
+            <span id="pairScore" class="code-form__value">RUNNER 1 &mdash; 0 points</span>
+          </div>
+          <div class="code-form__row">
+            <input id="pointsCode" class="input input--code code-form__input" type="text" maxlength="4"
+              placeholder="0000" inputmode="numeric" autocapitalize="off" autocorrect="off" spellcheck="false"
+              aria-label="Mission code" />
+            <button id="pointsSubmit" class="btn btn--primary code-form__submit" type="submit">Claim</button>
+          </div>
+          <p id="pointsError" class="error" hidden></p>
+        </form>
+      </section>
+
+      <section id="board-panel" class="panel panel--board" hidden aria-label="Leaderboard">
+        <header class="panel__head">
+          <div class="panel__heading">
+            <span class="panel__title">Leaderboard</span>
+            <span class="panel__hint">Alive pairs first, then points.</span>
+          </div>
+          <button id="boardClose" class="panel__close" type="button" aria-label="Close leaderboard">&#10005;</button>
+        </header>
+        <ol id="board-list" class="board-list"></ol>
       </section>
 
       <section id="chat-panel" class="chat" hidden aria-label="Hunter chat">
@@ -307,7 +343,20 @@
           <span class="eliminated__tag">Eliminated</span>
           <h2 class="eliminated__title">RETURN TO BASE</h2>
           <p id="eliminatedBy" class="eliminated__text"></p>
-          <p class="eliminated__text">Your pair is out. Head back to the base and sit tight.</p>
+          <p id="eliminatedNote" class="eliminated__text">Your pair is out. Head back to the base and sit tight.</p>
+          <div id="reviveBlock" class="revive" hidden>
+            <p id="reviveCodeHint" class="revive__hint"></p>
+            <form id="revive-form" class="revive__form" autocomplete="off">
+              <input id="reviveCode" class="input input--code revive__input" type="text" maxlength="4"
+                placeholder="0000" inputmode="numeric" autocapitalize="off" autocorrect="off"
+                spellcheck="false" aria-label="Revival code" />
+              <button id="reviveSubmit" class="revive__btn" type="submit">Revive</button>
+            </form>
+            <p id="reviveError" class="error" hidden></p>
+          </div>
+          <p id="revivePermanent" class="eliminated__text" hidden>
+            This pair already used its revival. This elimination is permanent.
+          </p>
           <button id="eliminatedClose" class="eliminated__btn" type="button">Continue</button>
         </div>
       </div>

@@ -204,6 +204,55 @@ function countRoles(party) {
   return out;
 }
 
+/** Every member of a runner pair, including members who were caught. */
+function pairMembers(party, pair) {
+  return [...party.players.values()].filter(
+    (p) => p.role === 'runner' && p.pair === pair
+  );
+}
+
+/**
+ * Anonymous, pair-level summary used by the leaderboard. A pair counts as
+ * alive while none of its members is caught, so a pair that revived and
+ * survived is shown as alive again.
+ */
+function pairStats(party) {
+  const groups = new Map();
+  for (const player of party.players.values()) {
+    if (player.role !== 'runner' || !player.pair) continue;
+    if (!groups.has(player.pair)) groups.set(player.pair, []);
+    groups.get(player.pair).push(player);
+  }
+  const points = party.pointsByPair || {};
+  const revived = party.reviveUsed || {};
+  return [...groups.entries()].map(([pair, members]) => ({
+    pair,
+    points: Number(points[pair]) || 0,
+    alive: !members.some((m) => m.caught),
+    revived: !!revived[pair],
+  }));
+}
+
+/**
+ * Surviving pairs rank above eliminated pairs; points break ties in
+ * descending order, and the pair number is the final stable tie-breaker.
+ */
+function leaderboard(party) {
+  return pairStats(party).sort((a, b) => {
+    if (a.alive !== b.alive) return a.alive ? -1 : 1;
+    if (b.points !== a.points) return b.points - a.points;
+    return a.pair - b.pair;
+  });
+}
+
+/** Whether a caught pair currently has a usable revival code. */
+function pairReviveAvailable(party, pair) {
+  if (!party || party.status !== 'active' || !pair) return false;
+  if (party.reviveUsed && party.reviveUsed[pair]) return false;
+  if (!party.reviveCodes || !party.reviveCodes[pair]) return false;
+  return activePairs(party).size > 0;
+}
+
 function sanitize(party) {
   return {
     id: party.id,
@@ -225,6 +274,7 @@ function sanitize(party) {
     endedAt: party.endedAt || null,
     serverTime: Date.now(),
     chat: (party.chat || []).slice(-60),
+    leaderboard: leaderboard(party),
     players: [...party.players.values()].map((p) => ({
       id: p.id,
       name: p.name,
@@ -233,6 +283,10 @@ function sanitize(party) {
       connected: p.connected,
       caught: !!p.caught,
       caughtBy: p.caughtBy || null,
+      reviveAvailable: p.role === 'runner' && p.caught
+        ? pairReviveAvailable(party, p.pair)
+        : false,
+      revived: !!(p.pair && party.reviveUsed && party.reviveUsed[p.pair]),
     })),
   };
 }
@@ -254,6 +308,11 @@ function pushChat(party, message) {
 // only refreshed every few seconds.
 const CATCH_RADIUS_M = 15;
 const CATCH_TOLERANCE_M = 10;
+
+// The mission code is deliberately simple for this version. It is only ever
+// compared server-side; the value is never included in sanitized party state.
+const MISSION_CODE = '1234';
+const MISSION_POINTS = 1;
 
 /** Great-circle distance in metres between two {lat,lng} points, or null. */
 function geoDistance(a, b) {
@@ -415,6 +474,7 @@ function endGame(party, winner) {
   party.winner = winner;
   party.endedAt = Date.now();
   clearPartyTimers(party);
+  party.reviveCodes = {};
   io.to(party.id).emit('party:ended', { winner, at: party.endedAt });
   broadcast(party);
 }
@@ -433,9 +493,15 @@ function beginGame(party) {
   party.revealed = [];
   party.revealedAt = null;
   party.nextRevealAt = party.huntStartsAt + REVEAL_INTERVAL_MS;
+  // Per-game, per-pair scoring and revival state.
+  party.pointsByPair = {};
+  party.missionClaims = {};
+  party.reviveUsed = {};
+  party.reviveCodes = {};
   for (const p of party.players.values()) {
     p.caught = false;
     p.caughtBy = null;
+    p.caughtAt = null;
     p.pos = null;
   }
   scheduleParty(party);
@@ -450,6 +516,36 @@ function eliminatePair(members, hunterName) {
     m.caughtBy = hunterName;
     m.pos = null;
   }
+}
+
+/** Sends a pair's private revival code to its connected members only. */
+function sendReviveCode(party, pair, socket) {
+  const entry = party.reviveCodes && party.reviveCodes[pair];
+  if (!entry) return;
+  const payload = { pair, code: entry.code, at: entry.at };
+  if (socket) {
+    io.to(socket.id).emit('pair:revive-code', payload);
+    return;
+  }
+  for (const m of pairMembers(party, pair)) {
+    if (m.connected && m.socketId) io.to(m.socketId).emit('pair:revive-code', payload);
+  }
+}
+
+/**
+ * Offers a one-time revival to a freshly caught pair. There is no revival
+ * when every pair is caught, and a pair that already revived cannot do it
+ * again.
+ */
+function offerRevive(party, pair) {
+  if (!party || party.status !== 'active' || !pair) return;
+  if (party.reviveUsed && party.reviveUsed[pair]) return;
+  if (activePairs(party).size < 1) return;
+  party.reviveCodes[pair] = {
+    code: String(crypto.randomInt(1000, 10000)),
+    at: Date.now(),
+  };
+  sendReviveCode(party, pair);
 }
 
 function getPartyForSocket(socket) {
@@ -517,6 +613,10 @@ io.on('connection', (socket) => {
       revealTimer: null,
       endTimer: null,
       chat: [],
+      pointsByPair: {},
+      missionClaims: {},
+      reviveUsed: {},
+      reviveCodes: {},
       players: new Map(),
     };
     party.players.set(playerId, {
@@ -604,6 +704,10 @@ io.on('connection', (socket) => {
     broadcast(party);
     sendPairDistances(party);
     if (player.role === 'hunter') sendReveal(party, socket);
+    if (player.role === 'runner' && player.caught
+      && pairReviveAvailable(party, player.pair)) {
+      sendReviveCode(party, player.pair, socket);
+    }
   });
 
   socket.on('party:settings', (payload = {}, done) => {
@@ -756,7 +860,6 @@ io.on('connection', (socket) => {
       at: Date.now(),
     });
     io.to(party.id).emit('chat:message', message);
-    broadcast(party);
 
     // Drop the caught pair from any markers currently on the hunters' maps.
     if (Array.isArray(party.revealed) && party.revealed.length) {
@@ -764,9 +867,117 @@ io.on('connection', (socket) => {
       sendReveal(party);
     }
 
-    if (!activePairs(party).size) endGame(party, 'hunters');
-    else sendPairDistances(party);
+    if (!activePairs(party).size) {
+      // All pairs are caught: no revival is possible.
+      endGame(party, 'hunters');
+    } else {
+      // Another pair is still running, so this pair may enter its private
+      // revival code once during this game. The code is created before the
+      // broadcast so the caught pair's state already says revival is available.
+      offerRevive(party, pair);
+      broadcast(party);
+      sendPairDistances(party);
+    }
     cb({ ok: true });
+  });
+
+  // Runner pairs can earn points by entering the mission code. Validation is
+  // entirely server-side: role, game state, code value and one claim per pair.
+  socket.on('mission:claim', (payload = {}, done) => {
+    const cb = ack(done);
+    const party = getPartyForSocket(socket);
+    if (!party) return cb({ ok: false, error: 'Not in a party.' });
+    if (party.status !== 'active') return cb({ ok: false, error: 'The game is not running.' });
+
+    const player = party.players.get(socket.data.playerId);
+    if (!player || player.role !== 'runner') {
+      return cb({ ok: false, error: 'Only runners can complete missions.' });
+    }
+    if (player.caught) {
+      return cb({ ok: false, error: 'Eliminated pairs cannot score.' });
+    }
+    const pair = Number(player.pair);
+    if (!pair) return cb({ ok: false, error: 'Join a runner pair first.' });
+
+    const code = String(payload.code || '').trim();
+    if (!/^\d{4}$/.test(code)) return cb({ ok: false, error: 'Enter the 4-digit mission code.' });
+
+    if (!party.missionClaims) party.missionClaims = {};
+    if (party.missionClaims[pair]) {
+      return cb({ ok: false, error: 'Your pair already claimed this mission.' });
+    }
+    if (code !== MISSION_CODE) return cb({ ok: false, error: 'Incorrect mission code.' });
+
+    party.missionClaims[pair] = true;
+    if (!party.pointsByPair) party.pointsByPair = {};
+    party.pointsByPair[pair] = (Number(party.pointsByPair[pair]) || 0) + MISSION_POINTS;
+
+    const message = pushChat(party, {
+      id: crypto.randomUUID(),
+      kind: 'log',
+      fromId: player.id,
+      from: player.name,
+      role: 'runner',
+      text: `RUNNER ${pair} completed the mission (+${MISSION_POINTS} point)`,
+      at: Date.now(),
+    });
+    io.to(party.id).emit('chat:message', message);
+    broadcast(party);
+    cb({ ok: true, points: party.pointsByPair[pair] });
+  });
+
+  // A caught pair can use its one-time revival code while at least one other
+  // pair is still active. A pair that already revived stays out for good if
+  // it is caught again.
+  socket.on('player:revive', (payload = {}, done) => {
+    const cb = ack(done);
+    const party = getPartyForSocket(socket);
+    if (!party) return cb({ ok: false, error: 'Not in a party.' });
+    if (party.status !== 'active') return cb({ ok: false, error: 'The game is not running.' });
+
+    const player = party.players.get(socket.data.playerId);
+    if (!player || player.role !== 'runner') {
+      return cb({ ok: false, error: 'Only runners can revive.' });
+    }
+    if (!player.caught) return cb({ ok: false, error: 'Your pair is still in the hunt.' });
+
+    const pair = Number(player.pair);
+    if (!pair) return cb({ ok: false, error: 'Join a runner pair first.' });
+    if (party.reviveUsed && party.reviveUsed[pair]) {
+      return cb({ ok: false, error: 'This pair has already used its revival.' });
+    }
+    if (!activePairs(party).size) {
+      return cb({ ok: false, error: 'No other runner pairs are left to revive against.' });
+    }
+    const entry = party.reviveCodes && party.reviveCodes[pair];
+    if (!entry) return cb({ ok: false, error: 'No revival code is available.' });
+
+    const code = String(payload.code || '').trim();
+    if (!/^\d{4}$/.test(code)) return cb({ ok: false, error: 'Enter the 4-digit revival code.' });
+    if (code !== entry.code) return cb({ ok: false, error: 'Incorrect revival code.' });
+
+    party.reviveUsed[pair] = true;
+    delete party.reviveCodes[pair];
+    for (const member of pairMembers(party, pair)) {
+      member.caught = false;
+      member.caughtBy = null;
+      member.caughtAt = null;
+      member.pos = null;
+    }
+
+    const message = pushChat(party, {
+      id: crypto.randomUUID(),
+      kind: 'log',
+      fromId: player.id,
+      from: player.name,
+      role: 'runner',
+      text: `RUNNER ${pair} revived and is back in the hunt`,
+      at: Date.now(),
+    });
+    io.to(party.id).emit('chat:message', message);
+    broadcast(party);
+    sendPairDistances(party);
+    cb({ ok: true, pair });
   });
 
   // Players share their position. Hunters receive distances only; exact runner
@@ -858,6 +1069,12 @@ module.exports = {
   normalizeSettings,
   activePairs,
   pairDistance,
+  pairMembers,
+  pairStats,
+  leaderboard,
+  pairReviveAvailable,
+  offerRevive,
+  sendReviveCode,
   eliminatePair,
   beginGame,
   revealPositions,
@@ -865,4 +1082,5 @@ module.exports = {
   scheduleParty,
   clearPartyTimers,
   REVEAL_INTERVAL_MS,
+  MISSION_CODE,
 };

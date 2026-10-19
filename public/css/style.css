@@ -1045,6 +1045,7 @@ select.input {
   background: var(--red-dim);
 }
 .pair-row__name { font-weight: 700; letter-spacing: 0.02em; }
+.pair-row__pts { font-size: 11px; color: var(--muted); }
 .pair-row__sep { color: var(--muted-2); }
 .pair-row__dist {
   margin-left: auto;
@@ -1052,6 +1053,77 @@ select.input {
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
+
+/* ===================== MISSION CODE / POINTS ====================== */
+.code-form {
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.code-form__score {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.code-form__label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.code-form__value { font-size: 15px; font-weight: 800; }
+.code-form__row { display: flex; gap: 8px; }
+.code-form__input { flex: 1; min-width: 0; }
+.code-form__submit {
+  flex: none;
+  min-height: 52px;
+  padding: 0 20px;
+  border-radius: var(--radius-sm);
+}
+
+/* ========================== LEADERBOARD =========================== */
+.board-list {
+  margin: 0;
+  padding: 8px 10px 12px;
+  list-style: none;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.board-list__empty { color: var(--muted-2); font-size: 12px; text-align: center; padding: 12px 0; }
+.board-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 13.5px;
+}
+.board-row__rank {
+  min-width: 17px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.board-row__name { font-weight: 700; letter-spacing: 0.02em; }
+.board-row__sep { color: var(--muted-2); }
+.board-row__state { color: var(--green); font-weight: 600; }
+.board-row__points {
+  margin-left: auto;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.board-row--out { opacity: 0.75; }
+.board-row--out .board-row__state { color: var(--red-bright); }
 
 /* ===================== REVEALED LOCATION PINS ===================== */
 .reveal-pin-wrap { background: none; border: 0; }
@@ -1184,6 +1256,36 @@ select.input {
   -webkit-tap-highlight-color: transparent;
 }
 .eliminated__btn:active { transform: scale(0.97); }
+
+/* Reviving a caught pair (one time per pair) */
+.revive {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.revive[hidden] { display: none; }
+.revive__hint { margin: 0; font-size: 12.5px; color: var(--text); line-height: 1.5; }
+.revive__form { display: flex; gap: 8px; }
+.revive__input { flex: 1; min-width: 0; }
+.revive__btn {
+  flex: none;
+  min-height: 52px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--green);
+  color: #06210f;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.revive__btn:active { transform: scale(0.97); }
+.elim-banner--revive { cursor: pointer; }
 
 /* ========================= FINAL RESULT =========================== */
 .result {

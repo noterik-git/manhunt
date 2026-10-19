@@ -44,9 +44,19 @@ and are lost when the server restarts (acceptable for this first version).
   location of each active runner pair as a red pin. The pins are replaced at the
   next reveal.
 - Hunter chat and game log (hunters post, everyone reads)
+- **Mission codes and points**: runner pairs open the **Points** panel and enter
+  the current 4-digit mission code (currently `1234`) to earn **1 point**.
+  Each pair can claim a code once per game and the server validates every claim.
+- **Leaderboard**: a **Ranks** button opens an anonymous leaderboard for both
+  roles. Surviving pairs rank above eliminated pairs, then by points descending
+  (`1. RUNNER 1 — Alive — 3 points`).
 - Proximity catch: a hunter within reach gets a **Catch** button; catching a pair
   eliminates both of its runners, stops their tracking and shows them
   **RETURN TO BASE**
+- **Pair revival**: a caught pair may rejoin **once per game** if at least one
+  other pair is still running. Its members receive a private 4-digit revival code
+  and enter it on the eliminated screen. A pair caught again after reviving is
+  out permanently, and no revival is offered once every pair is caught.
 - **Head start and game timers**: a `HEAD START — 15:00` countdown, then the main
   `TIME LEFT — 02:00:00` hunt timer. Both run on server-authoritative time.
 - **Win / lose panels**: a green **RUNNERS WIN** panel if any pair survives to
@@ -85,6 +95,11 @@ environment variable.
    anonymous numbered pairs.
 5. The host taps **Start Game**. The state syncs to every phone and the
    full-screen map takes over.
+6. Runners can tap **Points** and enter the mission code to score. Everyone can
+   tap **Ranks** to see the anonymous pair leaderboard.
+7. If a pair is caught while another pair is still running, its members can use
+   their private revival code on the eliminated screen. A pair gets one revival
+   per game.
 
 ## Project structure
 
@@ -116,14 +131,21 @@ Manhunt/
   **Dráva utca** (north) and the **Duna rakpart** (west); the area north of
   Dráva utca (towards Árpád híd) and the Buda side are excluded. Barrier streets
   are labelled. Kept in `data/templates.json` so it can be refined.
-- **Mission locations are not invented** and remain host-configurable.
+- **Mission codes and points are server-side.** The mission code is never sent
+  to clients. The server checks the role, that the game is running, that the code
+  is correct, and that the pair has not already claimed it before awarding a
+  point.
 - **Live GPS tracking.** Each player broadcasts their position every few seconds.
   A hunter's client receives **distances only** (the runner panel), never live
   coordinates — exact runner locations reach hunters only through the scheduled
   reveal. Your own dot is drawn with a heading cone. Hunter chat is posted by
   hunters and read by everyone. When a hunter within reach presses **Catch**, the
   target pair is eliminated (both runners stop being tracked) and the catch is
-  logged to the chat.
+  logged to the chat. A caught pair with another pair still active is sent a
+  private revival code; the server enforces the once-per-pair limit.
+- **Leaderboard ordering is server-side.** Pairs that are currently alive rank
+  first, followed by eliminated pairs; points sort each group in descending
+  order. Pair numbers stay anonymous (`RUNNER 1`, `RUNNER 2`, …).
 - **Timers and endings are server-authoritative.** The server sets the head-start
   and full-time timestamps and decides the winner; clients only render them. The
   main game timer does not run during the head start. Reveals fire every

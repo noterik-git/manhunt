@@ -47,6 +47,10 @@ const state = {
   positionTimer: null,
   catchPair: null,
   selfCaught: false,
+  // mission code + leaderboard panels
+  pointsOpen: false,
+  boardOpen: false,
+  reviveCode: null,
   // server-authoritative clock + end state
   clockOffset: 0,
   gameEnded: false,
@@ -208,6 +212,17 @@ socket.on('runner:distances', (payload) => {
 socket.on('party:reveal', (payload) => {
   state.reveal = payload && Array.isArray(payload.pins) ? payload : { pins: [] };
   renderRevealMarkers();
+});
+
+// The revival code is private: the server sends it only to the caught pair.
+socket.on('pair:revive-code', (payload) => {
+  if (!payload || payload.pair == null) return;
+  const me = myPlayer(state.party);
+  if (!me || me.role !== 'runner' || me.pair !== payload.pair) return;
+  state.reviveCode = String(payload.code || '');
+  // The party update that marks the pair caught can arrive just after this
+  // event; only redraw when the elimination is already known.
+  if (me.caught) renderElimination(me);
 });
 
 socket.on('party:ended', (payload) => {
@@ -718,6 +733,7 @@ function myPlayer(party) {
 function renderGame(party) {
   const me = myPlayer(party);
   const role = me ? me.role : 'unassigned';
+  const ownPair = me && me.pair != null ? pairEntry(party, me.pair) : null;
 
   $('roleName').textContent = roleLabel(role).toUpperCase();
   let detail = '';
@@ -727,6 +743,7 @@ function renderGame(party) {
       : 'Track pairs by distance. Catch by tag.';
   } else if (role === 'runner') {
     detail = me && me.pair ? 'Runner pair ' + me.pair : 'Escape and survive.';
+    if (ownPair) detail += ' \u00b7 ' + ownPair.points + ' pt' + (ownPair.points === 1 ? '' : 's');
   } else {
     detail = 'No role assigned yet.';
   }
@@ -738,11 +755,19 @@ function renderGame(party) {
   renderChat(party);
   renderPairPanel();
   renderRevealMarkers();
+  renderPointsPanel();
+  renderBoardPanel();
   syncTracking(party, me);
   renderResult(party, me);
   renderElimination(me);
   updateCatchButton();
   updateAreaWarning();
+}
+
+/** Leaderboard entry for one pair number, or null. */
+function pairEntry(party, pair) {
+  if (!party || !Array.isArray(party.leaderboard) || pair == null) return null;
+  return party.leaderboard.find((entry) => entry && entry.pair === pair) || null;
 }
 
 /**
@@ -913,6 +938,10 @@ function amHunter() {
   return normalizeRole(state.party, state.playerId) === 'hunter';
 }
 
+function amRunner() {
+  return normalizeRole(state.party, state.playerId) === 'runner';
+}
+
 /** Merge two chat histories by message id, oldest first. */
 function mergeChat(a, b) {
   const byId = new Map();
@@ -984,6 +1013,8 @@ function renderChatBadge() {
 
 function openChat() {
   closePairs();
+  closePoints();
+  closeBoard();
   state.chatOpen = true;
   state.chatUnread = 0;
   $('chat-panel').hidden = false;
@@ -1310,8 +1341,11 @@ function renderPairPanel() {
   }
   list.innerHTML = pairs.map((p) => {
     const cls = p.canCatch ? 'pair-row pair-row--close' : 'pair-row';
+    const entry = pairEntry(state.party, p.pair);
+    const points = entry ? entry.points : 0;
     return '<li class="' + cls + '">'
       + '<span class="pair-row__name">RUNNER ' + escapeHtml(String(p.pair)) + '</span>'
+      + '<span class="pair-row__pts">' + points + ' pt' + (points === 1 ? '' : 's') + '</span>'
       + '<span class="pair-row__sep">&mdash;</span>'
       + '<span class="pair-row__dist">' + escapeHtml(formatDistance(p.distance)) + '</span></li>';
   }).join('');
@@ -1320,6 +1354,8 @@ function renderPairPanel() {
 function openPairs() {
   if (!amHunter()) return;
   closeChat();
+  closePoints();
+  closeBoard();
   state.pairOpen = true;
   $('pair-panel').hidden = false;
   $('pairBtn').setAttribute('aria-expanded', 'true');
@@ -1339,6 +1375,133 @@ function closePairs() {
 function togglePairs() {
   if (state.pairOpen) closePairs();
   else openPairs();
+}
+
+/* ================================================================== */
+/* Mission code (runner pairs)                                        */
+/* ================================================================== */
+
+function renderPointsPanel() {
+  const btn = $('pointsBtn');
+  const panel = $('points-panel');
+  if (!btn || !panel) return;
+
+  const party = state.party;
+  const me = party ? myPlayer(party) : null;
+  const runner = amRunner() && party && party.status === 'active' && !(me && me.caught);
+  btn.hidden = !runner;
+  if (!runner) {
+    panel.hidden = true;
+    state.pointsOpen = false;
+    btn.setAttribute('aria-expanded', 'false');
+  }
+
+  const entry = me && me.pair != null ? pairEntry(party, me.pair) : null;
+  const score = $('pairScore');
+  if (score) {
+    score.textContent = entry
+      ? 'RUNNER ' + entry.pair + ' \u2014 ' + entry.points
+        + ' point' + (entry.points === 1 ? '' : 's')
+      : 'No runner pair yet';
+  }
+}
+
+function openPoints() {
+  if (!amRunner()) return;
+  closeChat();
+  closePairs();
+  closeBoard();
+  state.pointsOpen = true;
+  $('points-panel').hidden = false;
+  $('pointsBtn').setAttribute('aria-expanded', 'true');
+  renderPointsPanel();
+  updateCatchButton();
+}
+
+function closePoints() {
+  state.pointsOpen = false;
+  const panel = $('points-panel');
+  if (panel) panel.hidden = true;
+  const btn = $('pointsBtn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  updateCatchButton();
+}
+
+function togglePoints() {
+  if (state.pointsOpen) closePoints();
+  else openPoints();
+}
+
+function submitMissionCode(event) {
+  if (event) event.preventDefault();
+  if (!amRunner()) return showError('pointsError', 'Only runners can claim mission points.');
+  const input = $('pointsCode');
+  const code = input.value.trim();
+  if (!/^\d{4}$/.test(code)) {
+    return showError('pointsError', 'Enter the 4-digit mission code.');
+  }
+  socket.emit('mission:claim', { code }, (res) => {
+    if (res && res.ok) {
+      input.value = '';
+      showError('pointsError', '');
+      toast('Mission complete \u2014 +1 point');
+    } else {
+      showError('pointsError', (res && res.error) || 'Could not claim the code.');
+    }
+  });
+  return null;
+}
+
+/* ================================================================== */
+/* Leaderboard (both roles)                                           */
+/* ================================================================== */
+
+function renderBoardPanel() {
+  const list = $('board-list');
+  if (!list) return;
+  const entries = state.party && Array.isArray(state.party.leaderboard)
+    ? state.party.leaderboard
+    : [];
+  if (!entries.length) {
+    list.innerHTML = '<li class="board-list__empty">No runner pairs yet.</li>';
+    return;
+  }
+  list.innerHTML = entries.map((entry, index) => {
+    const pts = entry.points + ' point' + (entry.points === 1 ? '' : 's');
+    return '<li class="board-row ' + (entry.alive ? 'board-row--alive' : 'board-row--out') + '">'
+      + '<span class="board-row__rank">' + (index + 1) + '.</span> '
+      + '<span class="board-row__name">RUNNER ' + escapeHtml(String(entry.pair)) + '</span>'
+      + '<span class="board-row__sep"> &mdash; </span>'
+      + '<span class="board-row__state">' + (entry.alive ? 'Alive' : 'Eliminated') + '</span>'
+      + '<span class="board-row__sep"> &mdash; </span>'
+      + '<span class="board-row__points">' + pts + '</span>'
+      + '</li>';
+  }).join('');
+}
+
+function openBoard() {
+  closeChat();
+  closePairs();
+  closePoints();
+  state.boardOpen = true;
+  $('board-panel').hidden = false;
+  $('boardBtn').setAttribute('aria-expanded', 'true');
+  renderBoardPanel();
+  updateCatchButton();
+}
+
+function closeBoard() {
+  state.boardOpen = false;
+  const panel = $('board-panel');
+  if (panel) panel.hidden = true;
+  const btn = $('boardBtn');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  updateCatchButton();
+}
+
+function toggleBoard() {
+  if (state.boardOpen) closeBoard();
+  else openBoard();
 }
 
 /* ================================================================== */
@@ -1381,8 +1544,18 @@ function resetHunterView() {
   state.reveal = null;
   state.catchPair = null;
   state.pairOpen = false;
-  const panel = $('pair-panel');
-  if (panel) panel.hidden = true;
+  state.pointsOpen = false;
+  state.boardOpen = false;
+  state.reviveCode = null;
+  state.selfCaught = false;
+  ['pair-panel', 'points-panel', 'board-panel'].forEach((id) => {
+    const el = $(id);
+    if (el) el.hidden = true;
+  });
+  const pointsCode = $('pointsCode');
+  if (pointsCode) pointsCode.value = '';
+  const reviveCode = $('reviveCode');
+  if (reviveCode) reviveCode.value = '';
   const btn = $('catchRunnerBtn');
   if (btn) btn.hidden = true;
 }
@@ -1404,7 +1577,7 @@ function updateCatchButton() {
     });
   }
 
-  if (best && !state.chatOpen && !state.pairOpen) {
+  if (best && !state.chatOpen && !state.pairOpen && !state.pointsOpen && !state.boardOpen) {
     state.catchPair = best.pair;
     btn.textContent = 'Catch RUNNER ' + best.pair;
     btn.hidden = false;
@@ -1424,19 +1597,82 @@ function renderElimination(me) {
   const banner = $('elimBanner');
   if (!overlay || !banner) return;
 
+  const canRevive = Boolean(caught && me.reviveAvailable && !state.gameEnded);
   banner.hidden = !caught || state.gameEnded;
+  banner.classList.toggle('elim-banner--revive', canRevive);
+  banner.textContent = canRevive ? 'RETURN TO BASE \u00b7 TAP TO REVIVE' : 'RETURN TO BASE';
+
   if (!caught) {
     overlay.hidden = true;
     state.selfCaught = false;
+    state.reviveCode = null;
     return;
   }
-  if (state.selfCaught) return; // already acknowledged; keep the banner only
-  state.selfCaught = true;
+
   $('eliminatedBy').textContent = me.caughtBy
     ? 'Caught by ' + me.caughtBy + '.'
     : 'You were caught.';
-  overlay.hidden = state.gameEnded;
+  renderReviveSection(me, canRevive);
+
+  // Open automatically the first time this elimination is seen. After the
+  // player dismisses it, the banner reopens it on tap.
+  if (!state.selfCaught) {
+    state.selfCaught = true;
+    overlay.hidden = state.gameEnded;
+  }
+  if (state.gameEnded) overlay.hidden = true;
   updateCatchButton();
+}
+
+/** Shows the one-time revival form only while the pair may still revive. */
+function renderReviveSection(me, canRevive) {
+  const block = $('reviveBlock');
+  const note = $('eliminatedNote');
+  const permanent = $('revivePermanent');
+  if (!block) return;
+
+  block.hidden = !canRevive;
+  if (note) {
+    note.textContent = canRevive
+      ? 'Your pair can still get back into the hunt.'
+      : 'Your pair is out. Head back to the base and sit tight.';
+  }
+  if (permanent) permanent.hidden = !(me && me.revived && !canRevive);
+
+  if (canRevive) {
+    const hint = $('reviveCodeHint');
+    if (hint) {
+      hint.textContent = state.reviveCode
+        ? 'Your pair\u2019s revival code is ' + state.reviveCode + '. Enter it to rejoin.'
+        : 'Enter the revival code sent to your pair.';
+    }
+  }
+}
+
+function submitRevive(event) {
+  if (event) event.preventDefault();
+  const input = $('reviveCode');
+  const code = input.value.trim();
+  if (!/^\d{4}$/.test(code)) {
+    return showError('reviveError', 'Enter the 4-digit revival code.');
+  }
+  socket.emit('player:revive', { code }, (res) => {
+    if (res && res.ok) {
+      input.value = '';
+      showError('reviveError', '');
+      state.reviveCode = null;
+      toast('Your pair is back in the hunt');
+    } else {
+      showError('reviveError', (res && res.error) || 'Could not revive.');
+    }
+  });
+  return null;
+}
+
+function reopenEliminated() {
+  const me = state.party ? myPlayer(state.party) : null;
+  if (!me || !me.caught || state.gameEnded) return;
+  $('eliminated').hidden = false;
 }
 
 function dismissEliminated() {
@@ -1523,6 +1759,14 @@ function wire() {
   $('joinCode').addEventListener('input', (e) => {
     e.target.value = e.target.value.replace(/[^0-9]/g, '').slice(0, 4);
   });
+  ['pointsCode', 'reviveCode'].forEach((id) => {
+    const el = $(id);
+    if (el) {
+      el.addEventListener('input', (e) => {
+        e.target.value = e.target.value.replace(/[^0-9]/g, '').slice(0, 4);
+      });
+    }
+  });
 
   $('areaRadius').addEventListener('input', (e) => {
     $('radiusOut').textContent = e.target.value;
@@ -1552,8 +1796,15 @@ function wire() {
   $('chat-form').addEventListener('submit', sendChat);
   $('pairBtn').addEventListener('click', togglePairs);
   $('pairClose').addEventListener('click', closePairs);
+  $('pointsBtn').addEventListener('click', togglePoints);
+  $('pointsClose').addEventListener('click', closePoints);
+  $('points-form').addEventListener('submit', submitMissionCode);
+  $('boardBtn').addEventListener('click', toggleBoard);
+  $('boardClose').addEventListener('click', closeBoard);
   $('locateMeBtn').addEventListener('click', locateMe);
   $('catchRunnerBtn').addEventListener('click', doCatch);
+  $('elimBanner').addEventListener('click', reopenEliminated);
+  $('revive-form').addEventListener('submit', submitRevive);
   $('eliminatedClose').addEventListener('click', dismissEliminated);
   $('resultClose').addEventListener('click', dismissResult);
 }
